@@ -24,6 +24,7 @@ export default function Home() {
   const [sortBy, setSortBy] = useState("surface_ha");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [showBdnb, setShowBdnb] = useState(false);
+  const [surfaceUnit, setSurfaceUnit] = useState<"ha" | "m2">("ha");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -322,44 +323,66 @@ export default function Home() {
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
                   {[
-                    { key: "departement", label: "Dept" },
-                    { key: "commune", label: "Commune" },
-                    { key: "code_cultu", label: "Type" },
-                    { key: "surface_ha", label: "Surface (ha)" },
-                    { key: "nom_entreprise", label: "Entreprise" },
-                    { key: "dirigeant_nom", label: "Dirigeant" },
-                  ].map(({ key, label }) => (
+                    { key: "departement", label: "Dept", tooltip: "Numéro du département français où se trouve la serre (ex: 84 = Vaucluse)." },
+                    { key: "commune", label: "Commune", tooltip: "Nom de la ville ou du village où est localisée la serre." },
+                    { key: "code_cultu", label: "Type", tooltip: "Type de culture pratiquée sous serre : CSS = hors sol (tomates, concombres…), FLA = fleurs et plantes aromatiques, PEP = pépinières." },
+                    { key: "nom_entreprise", label: "Entreprise", tooltip: "Nom de l'entreprise agricole associée à cette parcelle, identifiée via le registre officiel des entreprises." },
+                    { key: "dirigeant_nom", label: "Dirigeant", tooltip: "Prénom et nom du dirigeant principal de l'entreprise agricole." },
+                  ].map(({ key, label, tooltip }) => (
                     <th
                       key={key}
                       onClick={() => handleSort(key)}
                       className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none"
+                      title={tooltip}
                     >
                       {label}
                       <SortIcon col={key} />
                     </th>
                   ))}
-                  <th className="px-4 py-3 text-left font-medium text-gray-600">
+                  {/* Colonne Surface avec toggle HA/m² */}
+                  <th
+                    onClick={() => handleSort("surface_ha")}
+                    className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none"
+                    title="Superficie de la parcelle sous serre. Cliquez sur HA / m² pour changer l'unité d'affichage."
+                  >
+                    <span className="flex items-center gap-1">
+                      Surface
+                      <SortIcon col="surface_ha" />
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setSurfaceUnit(surfaceUnit === "ha" ? "m2" : "ha"); }}
+                        className="ml-1 px-1.5 py-0.5 text-xs rounded bg-gray-200 hover:bg-blue-200 text-gray-600 hover:text-blue-700 font-mono"
+                        title="Basculer entre hectares et mètres carrés"
+                      >
+                        {surfaceUnit === "ha" ? "HA" : "m²"}
+                      </button>
+                    </span>
+                  </th>
+                  <th
+                    className="px-4 py-3 text-left font-medium text-gray-600"
+                    title="Niveau de confiance du rapprochement entre la parcelle RPG et l'entreprise trouvée. Haute = très fiable, Moyenne = probable, Basse = à vérifier. La distance en km indique l'écart entre la serre et le siège de l'entreprise."
+                  >
                     Confiance
                   </th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-600">
+                  <th
+                    className="px-4 py-3 text-left font-medium text-gray-600"
+                    title="Coordonnées GPS du centre de la parcelle (latitude, longitude). Cliquez pour ouvrir dans Google Maps."
+                  >
                     Coords
                   </th>
                   {/* BDNB - colonnes rétractables */}
                   <th
                     onClick={() => setShowBdnb(!showBdnb)}
                     className="px-3 py-3 text-left font-medium text-indigo-600 cursor-pointer hover:text-indigo-800 select-none border-l border-gray-200 bg-indigo-50/50 whitespace-nowrap"
-                    title={showBdnb ? "Replier les colonnes BDNB" : "Deployer les colonnes BDNB"}
+                    title="Base de Données Nationale des Bâtiments (IGN) — données officielles sur les bâtiments physiques. Cliquez pour afficher ou masquer les détails."
                   >
                     {showBdnb ? "\u25BC" : "\u25B6"} BDNB
                   </th>
                   {showBdnb && (
                     <>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Proprio BDNB</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">SIREN proprio</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Surface (m2)</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Hauteur</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Parcelle cad.</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Adresse</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Surface couverte par le bâtiment-serre selon le cadastre IGN, exprimée en mètres carrés.">Surface (m²)</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Hauteur moyenne et hauteur maximale du bâtiment-serre en mètres, mesurées par l'IGN.">Hauteur</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Identifiant de la parcelle cadastrale sur laquelle est construite la serre (référence du cadastre français).">Parcelle cad.</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Adresse postale du bâtiment-serre selon la Base Adresse Nationale (BAN).">Adresse</th>
                     </>
                   )}
                 </tr>
@@ -367,13 +390,13 @@ export default function Home() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={showBdnb ? 15 : 9} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={showBdnb ? 13 : 9} className="px-4 py-8 text-center text-gray-400">
                       Chargement...
                     </td>
                   </tr>
                 ) : data.length === 0 ? (
                   <tr>
-                    <td colSpan={showBdnb ? 15 : 9} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={showBdnb ? 13 : 9} className="px-4 py-8 text-center text-gray-400">
                       Aucun resultat
                     </td>
                   </tr>
@@ -403,9 +426,6 @@ export default function Home() {
                           {s.code_cultu}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-700 font-mono">
-                        {Number(s.surface_ha).toFixed(2)}
-                      </td>
                       <td className="px-4 py-3 text-gray-700">
                         {s.nom_entreprise ? (
                           <span className="font-medium">{s.nom_entreprise}</span>
@@ -421,6 +441,11 @@ export default function Home() {
                         ) : (
                           <span className="text-gray-300">—</span>
                         )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-700 font-mono">
+                        {surfaceUnit === "ha"
+                          ? `${Number(s.surface_ha).toFixed(2)} ha`
+                          : `${Math.round(Number(s.surface_ha) * 10000).toLocaleString("fr-FR")} m²`}
                       </td>
                       <td className="px-4 py-3">
                         {s.match_confiance ? (
@@ -467,21 +492,8 @@ export default function Home() {
                       {/* BDNB - colonnes déployées */}
                       {showBdnb && (
                         <>
-                          <td className="px-3 py-3 text-xs text-gray-600 bg-indigo-50/10">
-                            {s.bdnb_prop_nom ? (
-                              <span className="font-medium">{s.bdnb_prop_nom}</span>
-                            ) : (
-                              <span className="text-gray-300">—</span>
-                            )}
-                            {s.bdnb_prop_forme && (
-                              <span className="text-gray-400 ml-1">({s.bdnb_prop_forme})</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-3 text-xs font-mono text-gray-600 bg-indigo-50/10">
-                            {s.bdnb_prop_siren || <span className="text-gray-300">—</span>}
-                          </td>
                           <td className="px-3 py-3 text-xs text-gray-600 font-mono bg-indigo-50/10">
-                            {s.bdnb_surface_m2 ? Number(s.bdnb_surface_m2).toLocaleString("fr-FR") : <span className="text-gray-300">—</span>}
+                            {s.bdnb_surface_m2 ? `${Number(s.bdnb_surface_m2).toLocaleString("fr-FR")} m²` : <span className="text-gray-300">—</span>}
                           </td>
                           <td className="px-3 py-3 text-xs text-gray-600 bg-indigo-50/10">
                             {s.bdnb_hauteur_moy ? `${s.bdnb_hauteur_moy}m (max ${s.bdnb_hauteur_max}m)` : <span className="text-gray-300">—</span>}
