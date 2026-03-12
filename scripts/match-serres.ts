@@ -199,50 +199,62 @@ async function main() {
   console.log(`\nMatchs calculés en ${calcTime}s : ${matchResults.length} matchées, ${noMatch} sans match\n`);
 
   // ═══════════════════════════════════════════
-  // Phase 3 : Batch update groupé
+  // Phase 3 : Bulk update via unnest (1 seule requête SQL)
   // ═══════════════════════════════════════════
-  console.log("--- Phase 3 : Mise à jour BDD (batch groupé) ---");
+  console.log("--- Phase 3 : Mise à jour BDD (bulk unnest) ---");
 
-  // Grouper par (siren, siret_siege, nom, dirigeant_nom, dirigeant_prenom, commune, distance_km, confiance)
-  // pour réduire le nombre de requêtes SQL
-  const groups = new Map<string, { match: MatchResult; ids: number[] }>();
+  // Préparer les tableaux parallèles pour unnest
+  const ids           = matchResults.map(m => m.serreId);
+  const sirens        = matchResults.map(m => m.siren);
+  const sirets        = matchResults.map(m => m.siret_siege ?? null);
+  const noms          = matchResults.map(m => m.nom ?? null);
+  const dirig_noms    = matchResults.map(m => m.dirigeant_nom ?? null);
+  const dirig_prens   = matchResults.map(m => m.dirigeant_prenom ?? null);
+  const communes      = matchResults.map(m => m.commune ?? null);
+  const distances     = matchResults.map(m => m.distance_km);
+  const confiances    = matchResults.map(m => m.confiance);
 
-  for (const m of matchResults) {
-    const key = `${m.siren}|||${m.siret_siege}|||${m.nom}|||${m.dirigeant_nom}|||${m.dirigeant_prenom}|||${m.commune}|||${m.distance_km}|||${m.confiance}`;
-    if (!groups.has(key)) {
-      groups.set(key, { match: m, ids: [] });
-    }
-    groups.get(key)!.ids.push(m.serreId);
-  }
-
-  console.log(`${groups.size} groupes uniques (au lieu de ${matchResults.length} requêtes)\n`);
-
+  const CHUNK = 5000;
   let updated = 0;
-  let groupNum = 0;
 
-  for (const [, { match, ids }] of groups) {
-    // Batch les IDs par paquets de 500
-    for (let i = 0; i < ids.length; i += 500) {
-      const chunk = ids.slice(i, i + 500);
-      await sql`
-        UPDATE serres SET
-          siren = ${match.siren},
-          siret = ${match.siret_siege},
-          nom_entreprise = ${match.nom},
-          dirigeant_nom = ${match.dirigeant_nom},
-          dirigeant_prenom = ${match.dirigeant_prenom},
-          adresse_entreprise = ${match.commune},
-          distance_km = ${match.distance_km},
-          match_confiance = ${match.confiance}
-        WHERE id = ANY(${chunk})
-      `;
-      updated += chunk.length;
-    }
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const sliceIds        = ids.slice(i, i + CHUNK);
+    const sliceSirens     = sirens.slice(i, i + CHUNK);
+    const sliceSirets     = sirets.slice(i, i + CHUNK);
+    const sliceNoms       = noms.slice(i, i + CHUNK);
+    const sliceDNoms      = dirig_noms.slice(i, i + CHUNK);
+    const sliceDPrens     = dirig_prens.slice(i, i + CHUNK);
+    const sliceCommunes   = communes.slice(i, i + CHUNK);
+    const sliceDistances  = distances.slice(i, i + CHUNK);
+    const sliceConfiances = confiances.slice(i, i + CHUNK);
 
-    groupNum++;
-    if (groupNum % 200 === 0) {
-      console.log(`  ${updated}/${matchResults.length} mises à jour (${groupNum}/${groups.size} groupes)...`);
-    }
+    await sql`
+      UPDATE serres AS s SET
+        siren              = v.siren,
+        siret              = v.siret,
+        nom_entreprise     = v.nom,
+        dirigeant_nom      = v.dnom,
+        dirigeant_prenom   = v.dpren,
+        adresse_entreprise = v.commune,
+        distance_km        = v.distance::numeric,
+        match_confiance    = v.confiance
+      FROM (
+        SELECT
+          unnest(${sliceIds}::int[])     AS id,
+          unnest(${sliceSirens}::text[]) AS siren,
+          unnest(${sliceSirets}::text[]) AS siret,
+          unnest(${sliceNoms}::text[])   AS nom,
+          unnest(${sliceDNoms}::text[])  AS dnom,
+          unnest(${sliceDPrens}::text[]) AS dpren,
+          unnest(${sliceCommunes}::text[]) AS commune,
+          unnest(${sliceDistances}::numeric[]) AS distance,
+          unnest(${sliceConfiances}::text[]) AS confiance
+      ) AS v
+      WHERE s.id = v.id
+    `;
+
+    updated += sliceIds.length;
+    console.log(`  ${updated}/${matchResults.length} mises à jour...`);
   }
 
   // ═══════════════════════════════════════════
