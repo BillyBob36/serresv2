@@ -108,10 +108,10 @@ async function main() {
   console.log(`Entreprises chargées : ${allEntreprises.length}`);
 
   // Indexer les entreprises par département pour éviter O(n²) global
-  const entByDept = new Map<string, typeof allEntreprises>();
+  const entByDept = new Map<string, (typeof allEntreprises)[number][]>();
   for (const ent of allEntreprises) {
     const d = ent.departement as string;
-    if (!entByDept.has(d)) entByDept.set(d, []);
+    if (!entByDept.has(d)) entByDept.set(d, [] as (typeof allEntreprises)[number][]);
     entByDept.get(d)!.push(ent);
   }
   console.log(`Départements avec entreprises : ${entByDept.size}\n`);
