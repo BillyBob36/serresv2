@@ -107,100 +107,90 @@ async function main() {
   `;
   console.log(`Entreprises chargées : ${allEntreprises.length}`);
 
-  // Indexer les entreprises par département pour éviter O(n²) global
-  const entByDept = new Map<string, (typeof allEntreprises)[number][]>();
+  // Indexer les entreprises par cellule de grille géographique (1°x1° ≈ 80-111km)
+  // Cela évite de rater les entreprises situées dans un département voisin mais très proches
+  const GRID_SIZE = 1.0; // degrés
+  const entByCell = new Map<string, { ent: (typeof allEntreprises)[number]; lat: number; lon: number }[]>();
   for (const ent of allEntreprises) {
-    const d = ent.departement as string;
-    if (!entByDept.has(d)) entByDept.set(d, [] as (typeof allEntreprises)[number][]);
-    entByDept.get(d)!.push(ent);
+    const lat = Number(ent.latitude);
+    const lon = Number(ent.longitude);
+    if (!lat || !lon) continue;
+    const cellLat = Math.floor(lat / GRID_SIZE);
+    const cellLon = Math.floor(lon / GRID_SIZE);
+    const key = `${cellLat},${cellLon}`;
+    if (!entByCell.has(key)) entByCell.set(key, []);
+    entByCell.get(key)!.push({ ent, lat, lon });
   }
-  console.log(`Départements avec entreprises : ${entByDept.size}\n`);
+  console.log(`Cellules de grille : ${entByCell.size}\n`);
 
   // ═══════════════════════════════════════════
   // Phase 2 : Calcul de tous les matchs en mémoire
   // ═══════════════════════════════════════════
-  console.log("--- Phase 2 : Calcul des matchs (Haversine) ---");
+  console.log("--- Phase 2 : Calcul des matchs (Haversine, multi-département) ---");
   const matchResults: MatchResult[] = [];
   let totalHaute = 0;
   let totalMoyenne = 0;
   let totalBasse = 0;
   let noMatch = 0;
 
-  // Grouper les serres par département pour le logging
-  const serresByDept = new Map<string, (typeof allSerres)[number][]>();
-  for (const s of allSerres) {
-    const d = s.departement as string;
-    if (!serresByDept.has(d)) serresByDept.set(d, [] as (typeof allSerres)[number][]);
-    serresByDept.get(d)!.push(s);
-  }
+  let serreProcessed = 0;
 
-  let deptProcessed = 0;
-  for (const [dept, serres] of serresByDept) {
-    const entreprises = entByDept.get(dept);
-    if (!entreprises || entreprises.length === 0) {
-      noMatch += serres.length;
-      deptProcessed++;
-      continue;
+  for (const serre of allSerres) {
+    const serreLat = Number(serre.centroid_lat);
+    const serreLon = Number(serre.centroid_lon);
+    const cellLat = Math.floor(serreLat / GRID_SIZE);
+    const cellLon = Math.floor(serreLon / GRID_SIZE);
+
+    // Collecter les entreprises dans la cellule courante + les 8 cellules voisines
+    const candidates: { ent: (typeof allEntreprises)[number]; lat: number; lon: number }[] = [];
+    for (let dlat = -1; dlat <= 1; dlat++) {
+      for (let dlon = -1; dlon <= 1; dlon++) {
+        const key = `${cellLat + dlat},${cellLon + dlon}`;
+        const cell = entByCell.get(key);
+        if (cell) candidates.push(...cell);
+      }
     }
 
-    // Pré-convertir les coordonnées des entreprises
-    const entCoords = entreprises.map((e) => ({
-      lat: Number(e.latitude),
-      lon: Number(e.longitude),
-      idx: entreprises.indexOf(e),
-    }));
+    let bestEnt: (typeof allEntreprises)[number] | null = null;
+    let bestDistance = MAX_DISTANCE_KM;
+    let candidatsInRadius = 0;
 
-    let deptMatched = 0;
-
-    for (const serre of serres) {
-      const serreLat = Number(serre.centroid_lat);
-      const serreLon = Number(serre.centroid_lon);
-
-      let bestIdx = -1;
-      let bestDistance = MAX_DISTANCE_KM;
-      let candidatsInRadius = 0;
-
-      for (const ec of entCoords) {
-        const dist = haversineKm(serreLat, serreLon, ec.lat, ec.lon);
-        if (dist < MAX_DISTANCE_KM) {
-          candidatsInRadius++;
-          if (dist < bestDistance) {
-            bestDistance = dist;
-            bestIdx = ec.idx;
-          }
+    for (const { ent, lat, lon } of candidates) {
+      const dist = haversineKm(serreLat, serreLon, lat, lon);
+      if (dist < MAX_DISTANCE_KM) {
+        candidatsInRadius++;
+        if (dist < bestDistance) {
+          bestDistance = dist;
+          bestEnt = ent;
         }
       }
-
-      if (bestIdx >= 0) {
-        const ent = entreprises[bestIdx];
-        const confiance = getConfiance(bestDistance, candidatsInRadius);
-
-        matchResults.push({
-          serreId: serre.id as number,
-          siren: ent.siren as string,
-          siret_siege: ent.siret_siege as string,
-          nom: ent.nom as string,
-          dirigeant_nom: ent.dirigeant_nom as string,
-          dirigeant_prenom: ent.dirigeant_prenom as string,
-          commune: ent.commune as string,
-          distance_km: Math.round(bestDistance * 100) / 100,
-          confiance,
-        });
-
-        if (confiance === "haute") totalHaute++;
-        else if (confiance === "moyenne") totalMoyenne++;
-        else totalBasse++;
-        deptMatched++;
-      } else {
-        noMatch++;
-      }
     }
 
-    deptProcessed++;
-    if (deptProcessed % 10 === 0 || deptProcessed === serresByDept.size) {
+    if (bestEnt) {
+      const confiance = getConfiance(bestDistance, candidatsInRadius);
+      matchResults.push({
+        serreId: serre.id as number,
+        siren: bestEnt.siren as string,
+        siret_siege: bestEnt.siret_siege as string,
+        nom: bestEnt.nom as string,
+        dirigeant_nom: bestEnt.dirigeant_nom as string,
+        dirigeant_prenom: bestEnt.dirigeant_prenom as string,
+        commune: bestEnt.commune as string,
+        distance_km: Math.round(bestDistance * 100) / 100,
+        confiance,
+      });
+      if (confiance === "haute") totalHaute++;
+      else if (confiance === "moyenne") totalMoyenne++;
+      else totalBasse++;
+    } else {
+      noMatch++;
+    }
+
+    serreProcessed++;
+    if (serreProcessed % 1000 === 0 || serreProcessed === allSerres.length) {
       const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
       console.log(
-        `  [${deptProcessed}/${serresByDept.size}] ${dept}: ${deptMatched}/${serres.length} matchées | Total: ${matchResults.length} | ${elapsed}s`
+        `  [${serreProcessed}/${allSerres.length}] matchées: ${matchResults.length} | sans match: ${noMatch} | ${elapsed}s`
       );
     }
   }
