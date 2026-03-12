@@ -27,6 +27,12 @@ jobs:
 
       - run: npm ci
 
+      - name: Remove API routes and scripts (not needed for static export)
+        run: |
+          rm -rf src/app/api
+          rm -rf scripts
+          rm -f src/middleware.ts
+
       - name: Build static export
         run: npm run build
         env:
