@@ -127,10 +127,10 @@ async function main() {
   let noMatch = 0;
 
   // Grouper les serres par département pour le logging
-  const serresByDept = new Map<string, typeof allSerres>();
+  const serresByDept = new Map<string, (typeof allSerres)[number][]>();
   for (const s of allSerres) {
     const d = s.departement as string;
-    if (!serresByDept.has(d)) serresByDept.set(d, []);
+    if (!serresByDept.has(d)) serresByDept.set(d, [] as (typeof allSerres)[number][]);
     serresByDept.get(d)!.push(s);
   }
 
