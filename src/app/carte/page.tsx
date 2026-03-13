@@ -138,12 +138,11 @@ function CarteContent() {
     if (mapInstance.current.getZoom() < OSM_MIN_ZOOM) return;
 
     const bounds = mapInstance.current.getBounds();
-    const bboxKey = `${bounds.getSouth().toFixed(3)},${bounds.getWest().toFixed(3)},${bounds.getNorth().toFixed(3)},${bounds.getEast().toFixed(3)}`;
+    const bboxKey = `${bounds.getSouth().toFixed(2)},${bounds.getWest().toFixed(2)},${bounds.getNorth().toFixed(2)},${bounds.getEast().toFixed(2)}`;
     if (bboxKey === lastOsmBbox.current) return;
     lastOsmBbox.current = bboxKey;
 
     setOsmLoading(true);
-    osmLayer.current.clearLayers();
 
     try {
       const query = buildOverpassQuery(
@@ -163,16 +162,20 @@ function CarteContent() {
 
       let polyCount = 0;
 
+      // Clear ancien contenu juste avant d'ajouter le nouveau (swap atomique = pas de scintillement)
+      osmLayer.current!.clearLayers();
+
       L!.geoJSON(geojson, {
-        style: () => ({
-          color: "#059669",
-          weight: 2,
-          fillColor: "#10b981",
-          fillOpacity: 0.35,
-        }),
+        style: (feature) => {
+          const tags = feature?.properties || {};
+          const isLanduse = !!(tags.landuse && !tags.building);
+          if (isLanduse) {
+            return { color: "#f59e0b", weight: 2, dashArray: "6 4", fillColor: "#fbbf24", fillOpacity: 0.15 };
+          }
+          return { color: "#059669", weight: 2, fillColor: "#10b981", fillOpacity: 0.35 };
+        },
         onEachFeature: (feature, layer) => {
           if (!feature.geometry || feature.geometry.type === "Point") return;
-          polyCount++;
 
           let areaM2 = 0;
           if (feature.geometry.type === "Polygon" && feature.geometry.coordinates[0]) {
@@ -184,8 +187,17 @@ function CarteContent() {
           }
 
           const tags = feature.properties || {};
+          const isLanduse = !!(tags.landuse && !tags.building);
+
+          // Skip les zones landuse > 5ha (pas des serres)
+          if (isLanduse && areaM2 > 50000) return;
+
+          polyCount++;
+
           const buildingType = tags.building || tags.landuse || "serre";
           const name = tags.name || "";
+          const label = isLanduse ? "Zone" : "Serre OSM";
+          const labelColor = isLanduse ? "#d97706" : "#059669";
 
           const surfaceStr = areaM2 >= 10000
             ? `${(areaM2 / 10000).toFixed(2)} ha (${Math.round(areaM2).toLocaleString("fr-FR")} m²)`
@@ -193,7 +205,7 @@ function CarteContent() {
 
           const popup = `
             <div style="font-size:13px;line-height:1.6">
-              <strong style="color:#059669">⌂ Serre OSM</strong>${name ? ` — ${name}` : ""}<br/>
+              <strong style="color:${labelColor}">⌂ ${label}</strong>${name ? ` — ${name}` : ""}<br/>
               Type : ${buildingType}<br/>
               <strong>Surface : ${surfaceStr}</strong><br/>
               <span style="font-size:11px;color:#888">ID OSM : ${tags.id || feature.id || ""}</span>

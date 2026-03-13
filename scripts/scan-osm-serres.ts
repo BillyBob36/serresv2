@@ -211,7 +211,7 @@ function parseGreenhousePolygons(elements: OsmElement[]): GreenhousePolygon[] {
       if (coords.length < 3) continue;
 
       const area = geodesicAreaM2(coords);
-      if (area < 5 || area > 500000) continue; // filtrer aberrations
+      if (area < 5 || area > 50000) continue; // filtrer aberrations (max 5ha = serre réaliste)
 
       const c = centroid(coords);
       polygons.push({

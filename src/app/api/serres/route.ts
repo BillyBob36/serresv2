@@ -58,6 +58,12 @@ export async function GET(request: NextRequest) {
     paramIdx++;
   }
 
+  const statut = params.get("statut");
+  if (statut) {
+    conditions.push(`EXISTS (SELECT 1 FROM prospection p WHERE p.serre_id = s.id AND p.statut = $${paramIdx++})`);
+    values.push(statut);
+  }
+
   const whereClause =
     conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 

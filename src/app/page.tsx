@@ -24,7 +24,19 @@ export default function Home() {
   const [sortBy, setSortBy] = useState("surface_ha");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [showBdnb, setShowBdnb] = useState(false);
+  const [showEnrich, setShowEnrich] = useState(false);
   const [surfaceUnit, setSurfaceUnit] = useState<"ha" | "m2">("ha");
+  const [statutFilter, setStatutFilter] = useState("");
+
+  // Prospection state (keyed by serre_id)
+  const [prospections, setProspections] = useState<Record<number, { statut: string; match_valide: string }>>({});
+  const [notes, setNotes] = useState<Record<number, { id: number; note: string; created_at: string; username?: string }[]>>({});
+  const [openNotes, setOpenNotes] = useState<number | null>(null);
+  const [noteText, setNoteText] = useState("");
+
+  // Enrichissement cache (keyed by siren)
+  const [enrichCache, setEnrichCache] = useState<Record<string, any>>({});
+  const [enrichLoading, setEnrichLoading] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -39,6 +51,7 @@ export default function Home() {
     if (surfaceMax) params.set("surface_max", surfaceMax);
     if (avecEntreprise) params.set("avec_entreprise", "true");
     if (search) params.set("search", search);
+    if (statutFilter) params.set("statut", statutFilter);
 
     try {
       const resp = await fetch(`${API}/api/serres?${params}`);
@@ -59,6 +72,7 @@ export default function Home() {
     surfaceMax,
     avecEntreprise,
     search,
+    statutFilter,
     sortBy,
     sortOrder,
   ]);
@@ -73,6 +87,83 @@ export default function Home() {
     }
   }, []);
 
+  // Charger les prospections pour la page courante
+  const fetchProspections = useCallback(async (serreIds: number[]) => {
+    if (serreIds.length === 0) return;
+    try {
+      const resp = await fetch(`${API}/api/prospection?serre_ids=${serreIds.join(",")}`);
+      const json = await resp.json();
+      const map: Record<number, { statut: string; match_valide: string }> = {};
+      for (const p of json.data || []) {
+        map[p.serre_id] = { statut: p.statut, match_valide: p.match_valide };
+      }
+      setProspections(map);
+    } catch (err) {
+      console.error("Erreur prospections:", err);
+    }
+  }, []);
+
+  const updateProspection = async (serreId: number, field: string, value: string) => {
+    setProspections((prev) => ({
+      ...prev,
+      [serreId]: { ...prev[serreId], [field]: value },
+    }));
+    try {
+      await fetch(`${API}/api/prospection`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serre_id: serreId, [field]: value }),
+      });
+    } catch (err) {
+      console.error("Erreur update prospection:", err);
+    }
+  };
+
+  const fetchNotes = async (serreId: number) => {
+    try {
+      const resp = await fetch(`${API}/api/prospection/notes?serre_id=${serreId}`);
+      const json = await resp.json();
+      setNotes((prev) => ({ ...prev, [serreId]: json.data || [] }));
+    } catch (err) {
+      console.error("Erreur notes:", err);
+    }
+  };
+
+  const addNote = async (serreId: number) => {
+    if (!noteText.trim()) return;
+    try {
+      await fetch(`${API}/api/prospection/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serre_id: serreId, note: noteText.trim() }),
+      });
+      setNoteText("");
+      fetchNotes(serreId);
+    } catch (err) {
+      console.error("Erreur ajout note:", err);
+    }
+  };
+
+  const enrichir = async (siren: string, nom: string, lat: number, lon: number) => {
+    if (enrichCache[siren]) return;
+    setEnrichLoading(siren);
+    try {
+      const resp = await fetch(`${API}/api/enrichir`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ siren, nom_entreprise: nom, lat, lon }),
+      });
+      const json = await resp.json();
+      if (json.data) {
+        setEnrichCache((prev) => ({ ...prev, [siren]: json.data }));
+      }
+    } catch (err) {
+      console.error("Erreur enrichissement:", err);
+    } finally {
+      setEnrichLoading(null);
+    }
+  };
+
   useEffect(() => {
     fetchData();
   }, [fetchData]);
@@ -80,6 +171,13 @@ export default function Home() {
   useEffect(() => {
     fetchStats();
   }, [fetchStats]);
+
+  // Charger les prospections quand les données changent
+  useEffect(() => {
+    if (data.length > 0) {
+      fetchProspections(data.map((s) => s.id));
+    }
+  }, [data, fetchProspections]);
 
   const handleSort = (col: string) => {
     if (sortBy === col) {
@@ -98,6 +196,7 @@ export default function Home() {
     setSurfaceMax("");
     setAvecEntreprise(false);
     setSearch("");
+    setStatutFilter("");
     setPage(1);
   };
 
@@ -283,6 +382,23 @@ export default function Home() {
               />
               <span className="text-sm text-gray-700">Avec entreprise</span>
             </label>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Statut</label>
+              <select
+                value={statutFilter}
+                onChange={(e) => { setStatutFilter(e.target.value); setPage(1); }}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 bg-white"
+              >
+                <option value="">Tous</option>
+                <option value="nouveau">Nouveau</option>
+                <option value="a_contacter">A contacter</option>
+                <option value="appele">Appele</option>
+                <option value="interesse">Interesse</option>
+                <option value="pas_interesse">Pas interesse</option>
+                <option value="injoignable">Injoignable</option>
+                <option value="client">Client</option>
+              </select>
+            </div>
             <button
               onClick={resetFilters}
               className="px-3 py-2 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg"
@@ -325,9 +441,7 @@ export default function Home() {
                   {[
                     { key: "departement", label: "Dept", tooltip: "Numéro du département français où se trouve la serre (ex: 84 = Vaucluse)." },
                     { key: "commune", label: "Commune", tooltip: "Nom de la ville ou du village où est localisée la serre." },
-                    { key: "code_cultu", label: "Type", tooltip: "Type de culture pratiquée sous serre : CSS = hors sol (tomates, concombres…), FLA = fleurs et plantes aromatiques, PEP = pépinières." },
-                    { key: "nom_entreprise", label: "Entreprise", tooltip: "Nom de l'entreprise agricole associée à cette parcelle, identifiée via le registre officiel des entreprises." },
-                    { key: "dirigeant_nom", label: "Dirigeant", tooltip: "Prénom et nom du dirigeant principal de l'entreprise agricole." },
+                    { key: "code_cultu", label: "Type", tooltip: "Type de culture pratiquée sous serre : CSS = hors sol, FLA = fleurs, PEP = pépinières." },
                   ].map(({ key, label, tooltip }) => (
                     <th
                       key={key}
@@ -339,6 +453,16 @@ export default function Home() {
                       <SortIcon col={key} />
                     </th>
                   ))}
+                  <th
+                    onClick={() => handleSort("nom_entreprise")}
+                    className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none min-w-[280px]"
+                    title="Entreprises candidates (top 3 les plus proches) avec leur dirigeant"
+                  >
+                    Prospects <SortIcon col="nom_entreprise" />
+                  </th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap" title="Statut de prospection">Statut</th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap" title="Validation : le prospect correspond-il à la parcelle ?">Match</th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap" title="Notes et journal d'appels">Notes</th>
                   {/* Colonne Surface parcelle avec toggle HA/m² */}
                   <th
                     onClick={() => handleSort("surface_ha")}
@@ -395,18 +519,38 @@ export default function Home() {
                       <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Adresse postale du bâtiment-serre selon la Base Adresse Nationale (BAN).">Adresse</th>
                     </>
                   )}
+                  {/* Enrichissement - colonnes rétractables */}
+                  <th
+                    onClick={() => setShowEnrich(!showEnrich)}
+                    className="px-3 py-3 text-left font-medium text-orange-600 cursor-pointer hover:text-orange-800 select-none border-l border-gray-200 bg-orange-50/50 whitespace-nowrap"
+                    title="Données d'enrichissement (Pappers + Google Places). Cliquez pour afficher ou masquer."
+                  >
+                    {showEnrich ? "\u25BC" : "\u25B6"} Enrichissement
+                  </th>
+                  {showEnrich && (
+                    <>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Forme jur.</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">NAF</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Effectifs</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">CA</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Telephone</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Site web</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Note Google</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Dirigeants</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={showBdnb ? 14 : 10} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={99} className="px-4 py-8 text-center text-gray-400">
                       Chargement...
                     </td>
                   </tr>
                 ) : data.length === 0 ? (
                   <tr>
-                    <td colSpan={showBdnb ? 14 : 10} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={99} className="px-4 py-8 text-center text-gray-400">
                       Aucun resultat
                     </td>
                   </tr>
@@ -436,49 +580,133 @@ export default function Home() {
                           {s.code_cultu}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-700" colSpan={1}>
-                        {s.top_matches && s.top_matches.length > 1 ? (
-                          <details className="group">
-                            <summary className="cursor-pointer list-none font-medium flex items-center gap-1">
-                              <span className="text-xs text-blue-500 group-open:rotate-90 transition-transform inline-block">▶</span>
-                              {s.top_matches[0]?.nom_entreprise || "—"}
-                              <span className="text-[10px] text-gray-400 ml-1">({s.top_matches.length})</span>
-                            </summary>
-                            <div className="mt-1 space-y-1 text-xs border-l-2 border-blue-200 pl-2">
-                              {s.top_matches.map((m: SerreMatch, idx: number) => (
-                                <div key={idx} className={`${idx === 0 ? "font-medium text-blue-700" : "text-gray-500"}`}>
-                                  #{m.rang} {m.nom_entreprise} <span className="text-gray-400">({Number(m.distance_km).toFixed(1)}km)</span>
+                      {/* Colonne Prospects unifiée */}
+                      <td className="px-4 py-3 text-gray-700">
+                        {s.top_matches && s.top_matches.length > 0 ? (
+                          <div className="space-y-1">
+                            {/* #1 toujours visible */}
+                            {(() => { const m = s.top_matches[0]; return (
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="font-semibold text-blue-700 truncate max-w-[160px]" title={m.nom_entreprise || ""}>{m.nom_entreprise || "—"}</span>
+                                <span className="text-gray-400">—</span>
+                                <span className="text-gray-600 truncate max-w-[120px]">{m.dirigeant_prenom} {m.dirigeant_nom}</span>
+                                <span className="text-gray-400 whitespace-nowrap">({Number(m.distance_km).toFixed(1)}km)</span>
+                                <button
+                                  onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon))}
+                                  disabled={!!enrichCache[m.siren] || enrichLoading === m.siren}
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${enrichCache[m.siren] ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700 hover:bg-orange-200"}`}
+                                  title={enrichCache[m.siren] ? "Enrichi" : "Enrichir via Pappers + Google"}
+                                >
+                                  {enrichLoading === m.siren ? "..." : enrichCache[m.siren] ? "Enrichi" : "Enrichir"}
+                                </button>
+                              </div>
+                            ); })()}
+                            {/* #2, #3 expandable */}
+                            {s.top_matches.length > 1 && (
+                              <details className="group">
+                                <summary className="cursor-pointer list-none text-[10px] text-blue-500 hover:text-blue-700">
+                                  + {s.top_matches.length - 1} autre(s)
+                                </summary>
+                                <div className="mt-1 space-y-1 border-l-2 border-blue-200 pl-2">
+                                  {s.top_matches.slice(1).map((m: SerreMatch, idx: number) => (
+                                    <div key={idx} className="flex items-center gap-2 text-[11px] text-gray-500">
+                                      <span className="font-medium truncate max-w-[140px]" title={m.nom_entreprise || ""}>{m.nom_entreprise}</span>
+                                      <span className="text-gray-300">—</span>
+                                      <span className="truncate max-w-[100px]">{m.dirigeant_prenom} {m.dirigeant_nom}</span>
+                                      <span className="text-gray-400 whitespace-nowrap">({Number(m.distance_km).toFixed(1)}km)</span>
+                                      <button
+                                        onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon))}
+                                        disabled={!!enrichCache[m.siren] || enrichLoading === m.siren}
+                                        className={`px-1 py-0.5 rounded text-[9px] font-medium ${enrichCache[m.siren] ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700 hover:bg-orange-200"}`}
+                                      >
+                                        {enrichLoading === m.siren ? "..." : enrichCache[m.siren] ? "Enrichi" : "Enrichir"}
+                                      </button>
+                                    </div>
+                                  ))}
                                 </div>
-                              ))}
-                            </div>
-                          </details>
+                              </details>
+                            )}
+                          </div>
                         ) : s.nom_entreprise ? (
-                          <span className="font-medium">{s.nom_entreprise}</span>
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="font-semibold">{s.nom_entreprise}</span>
+                            <span className="text-gray-400">—</span>
+                            <span className="text-gray-600">{s.dirigeant_prenom} {s.dirigeant_nom}</span>
+                          </div>
                         ) : (
                           <span className="text-gray-300">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-gray-700">
-                        {s.top_matches && s.top_matches.length > 1 ? (
-                          <details className="group">
-                            <summary className="cursor-pointer list-none flex items-center gap-1">
-                              <span className="text-xs text-blue-500 group-open:rotate-90 transition-transform inline-block">▶</span>
-                              {s.top_matches[0]?.dirigeant_prenom} {s.top_matches[0]?.dirigeant_nom}
-                            </summary>
-                            <div className="mt-1 space-y-1 text-xs border-l-2 border-blue-200 pl-2">
-                              {s.top_matches.map((m: SerreMatch, idx: number) => (
-                                <div key={idx} className={`${idx === 0 ? "font-medium text-blue-700" : "text-gray-500"}`}>
-                                  #{m.rang} {m.dirigeant_prenom} {m.dirigeant_nom}
+                      {/* Colonne Statut */}
+                      <td className="px-3 py-3">
+                        <select
+                          value={prospections[s.id]?.statut || "nouveau"}
+                          onChange={(e) => updateProspection(s.id, "statut", e.target.value)}
+                          className={`text-[11px] rounded px-1.5 py-1 border-0 font-medium cursor-pointer ${
+                            { nouveau: "bg-gray-100 text-gray-600", a_contacter: "bg-blue-100 text-blue-700", appele: "bg-yellow-100 text-yellow-700", interesse: "bg-green-100 text-green-700", pas_interesse: "bg-red-100 text-red-700", injoignable: "bg-orange-100 text-orange-700", client: "bg-purple-100 text-purple-700" }[prospections[s.id]?.statut || "nouveau"] || "bg-gray-100 text-gray-600"
+                          }`}
+                        >
+                          <option value="nouveau">Nouveau</option>
+                          <option value="a_contacter">A contacter</option>
+                          <option value="appele">Appele</option>
+                          <option value="interesse">Interesse</option>
+                          <option value="pas_interesse">Pas interesse</option>
+                          <option value="injoignable">Injoignable</option>
+                          <option value="client">Client</option>
+                        </select>
+                      </td>
+                      {/* Colonne Match validation */}
+                      <td className="px-3 py-3">
+                        <div className="flex gap-1">
+                          {[
+                            { val: "confirme", icon: "\u2705", title: "Bon match" },
+                            { val: "mauvais_match", icon: "\u274C", title: "Mauvais match" },
+                            { val: "incertain", icon: "\u2753", title: "Incertain" },
+                          ].map(({ val, icon, title }) => (
+                            <button
+                              key={val}
+                              onClick={() => updateProspection(s.id, "match_valide", val)}
+                              className={`w-6 h-6 rounded text-xs ${(prospections[s.id]?.match_valide || "incertain") === val ? "ring-2 ring-blue-400 bg-blue-50" : "opacity-40 hover:opacity-100"}`}
+                              title={title}
+                            >
+                              {icon}
+                            </button>
+                          ))}
+                        </div>
+                      </td>
+                      {/* Colonne Notes */}
+                      <td className="px-3 py-3 relative">
+                        <button
+                          onClick={() => { if (openNotes === s.id) { setOpenNotes(null); } else { setOpenNotes(s.id); fetchNotes(s.id); setNoteText(""); } }}
+                          className={`text-xs px-2 py-1 rounded ${openNotes === s.id ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                          title="Journal de notes"
+                        >
+                          {notes[s.id]?.length ? `\uD83D\uDCDD ${notes[s.id].length}` : "\uD83D\uDCDD"}
+                        </button>
+                        {openNotes === s.id && (
+                          <div className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-72 right-0">
+                            <div className="max-h-40 overflow-y-auto space-y-2 mb-2">
+                              {(notes[s.id] || []).length === 0 && <p className="text-xs text-gray-400">Aucune note</p>}
+                              {(notes[s.id] || []).map((n) => (
+                                <div key={n.id} className="text-xs border-b border-gray-100 pb-1">
+                                  <span className="text-gray-400">{new Date(n.created_at).toLocaleDateString("fr-FR")} {new Date(n.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span>
+                                  {n.username && <span className="text-blue-500 ml-1">{n.username}</span>}
+                                  <p className="text-gray-700 mt-0.5">{n.note}</p>
                                 </div>
                               ))}
                             </div>
-                          </details>
-                        ) : s.dirigeant_prenom || s.dirigeant_nom ? (
-                          <span>
-                            {s.dirigeant_prenom} {s.dirigeant_nom}
-                          </span>
-                        ) : (
-                          <span className="text-gray-300">—</span>
+                            <div className="flex gap-1">
+                              <input
+                                type="text"
+                                value={noteText}
+                                onChange={(e) => setNoteText(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") addNote(s.id); }}
+                                placeholder="Ajouter une note..."
+                                className="flex-1 text-xs px-2 py-1 border border-gray-300 rounded text-gray-900 bg-white"
+                              />
+                              <button onClick={() => addNote(s.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">OK</button>
+                            </div>
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-3 text-gray-700 font-mono">
@@ -567,6 +795,64 @@ export default function Home() {
                           </td>
                         </>
                       )}
+                      {/* Enrichissement - cellule résumé */}
+                      {(() => {
+                        const siren = s.top_matches?.[0]?.siren || s.siren;
+                        const e = siren ? enrichCache[siren] : null;
+                        return (
+                          <>
+                            <td className="px-3 py-3 border-l border-gray-200">
+                              {e ? (
+                                <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700" title={`${e.source} — ${e.forme_juridique || ""}`}>
+                                  Enrichi
+                                </span>
+                              ) : (
+                                <span className="text-gray-300 text-xs">—</span>
+                              )}
+                            </td>
+                            {showEnrich && (
+                              <>
+                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
+                                  {e?.forme_juridique || <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10" title={e?.libelle_naf || ""}>
+                                  {e?.code_naf || <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
+                                  {e?.tranche_effectifs || <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-3 py-3 text-xs text-gray-600 font-mono bg-orange-50/10">
+                                  {e?.chiffre_affaires ? `${Number(e.chiffre_affaires).toLocaleString("fr-FR")} \u20AC` : <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
+                                  {e?.telephone ? (
+                                    <a href={`tel:${e.telephone}`} className="text-blue-600 hover:underline">{e.telephone}</a>
+                                  ) : <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10 max-w-[150px] truncate">
+                                  {e?.site_web ? (
+                                    <a href={e.site_web} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{e.site_web.replace(/^https?:\/\//, "")}</a>
+                                  ) : <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
+                                  {e?.note_google ? (
+                                    <span>{e.note_google}/5 <span className="text-gray-400">({e.avis_count})</span></span>
+                                  ) : <span className="text-gray-300">—</span>}
+                                </td>
+                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10 max-w-[200px]">
+                                  {e?.dirigeants && Array.isArray(e.dirigeants) ? (
+                                    <div className="space-y-0.5">
+                                      {(e.dirigeants as any[]).slice(0, 3).map((d: any, i: number) => (
+                                        <div key={i} className="truncate">{d.prenom} {d.nom} <span className="text-gray-400">({d.qualite})</span></div>
+                                      ))}
+                                    </div>
+                                  ) : <span className="text-gray-300">—</span>}
+                                </td>
+                              </>
+                            )}
+                          </>
+                        );
+                      })()}
                     </tr>
                   ))
                 )}
