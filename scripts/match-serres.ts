@@ -69,6 +69,19 @@ interface MatchResult {
   confiance: string;
 }
 
+interface TopMatch {
+  serreId: number;
+  rang: number;
+  siren: string;
+  siret: string;
+  nom: string;
+  dirigeant_nom: string;
+  dirigeant_prenom: string;
+  commune: string;
+  distance_km: number;
+  confiance: string;
+}
+
 async function main() {
   console.log("=== Matching Serres → Entreprises ===\n");
   const t0 = Date.now();
@@ -126,8 +139,9 @@ async function main() {
   // ═══════════════════════════════════════════
   // Phase 2 : Calcul de tous les matchs en mémoire
   // ═══════════════════════════════════════════
-  console.log("--- Phase 2 : Calcul des matchs (Haversine, multi-département) ---");
+  console.log("--- Phase 2 : Calcul des matchs (Haversine, multi-département, top 3) ---");
   const matchResults: MatchResult[] = [];
+  const topMatches: TopMatch[] = [];
   let totalHaute = 0;
   let totalMoyenne = 0;
   let totalBasse = 0;
@@ -151,37 +165,55 @@ async function main() {
       }
     }
 
-    let bestEnt: (typeof allEntreprises)[number] | null = null;
-    let bestDistance = MAX_DISTANCE_KM;
-    let candidatsInRadius = 0;
-
+    // Collecter toutes les entreprises dans le rayon avec leur distance
+    const inRadius: { ent: (typeof allEntreprises)[number]; dist: number }[] = [];
     for (const { ent, lat, lon } of candidates) {
       const dist = haversineKm(serreLat, serreLon, lat, lon);
       if (dist < MAX_DISTANCE_KM) {
-        candidatsInRadius++;
-        if (dist < bestDistance) {
-          bestDistance = dist;
-          bestEnt = ent;
-        }
+        inRadius.push({ ent, dist });
       }
     }
 
-    if (bestEnt) {
-      const confiance = getConfiance(bestDistance, candidatsInRadius);
+    if (inRadius.length > 0) {
+      // Trier par distance croissante et garder les 3 premiers
+      inRadius.sort((a, b) => a.dist - b.dist);
+      const top3 = inRadius.slice(0, 3);
+
+      // Le #1 va dans matchResults (pour la table serres - compatibilité)
+      const best = top3[0];
+      const confiance = getConfiance(best.dist, inRadius.length);
       matchResults.push({
         serreId: serre.id as number,
-        siren: bestEnt.siren as string,
-        siret_siege: bestEnt.siret_siege as string,
-        nom: bestEnt.nom as string,
-        dirigeant_nom: bestEnt.dirigeant_nom as string,
-        dirigeant_prenom: bestEnt.dirigeant_prenom as string,
-        commune: bestEnt.commune as string,
-        distance_km: Math.round(bestDistance * 100) / 100,
+        siren: best.ent.siren as string,
+        siret_siege: best.ent.siret_siege as string,
+        nom: best.ent.nom as string,
+        dirigeant_nom: best.ent.dirigeant_nom as string,
+        dirigeant_prenom: best.ent.dirigeant_prenom as string,
+        commune: best.ent.commune as string,
+        distance_km: Math.round(best.dist * 100) / 100,
         confiance,
       });
       if (confiance === "haute") totalHaute++;
       else if (confiance === "moyenne") totalMoyenne++;
       else totalBasse++;
+
+      // Les 3 vont dans topMatches (pour la table serre_matches)
+      for (let r = 0; r < top3.length; r++) {
+        const m = top3[r];
+        const mConf = getConfiance(m.dist, inRadius.length);
+        topMatches.push({
+          serreId: serre.id as number,
+          rang: r + 1,
+          siren: m.ent.siren as string,
+          siret: m.ent.siret_siege as string,
+          nom: m.ent.nom as string,
+          dirigeant_nom: m.ent.dirigeant_nom as string,
+          dirigeant_prenom: m.ent.dirigeant_prenom as string,
+          commune: m.ent.commune as string,
+          distance_km: Math.round(m.dist * 100) / 100,
+          confiance: mConf,
+        });
+      }
     } else {
       noMatch++;
     }
@@ -255,6 +287,49 @@ async function main() {
 
     updated += sliceIds.length;
     console.log(`  ${updated}/${matchResults.length} mises à jour...`);
+  }
+
+  // ═══════════════════════════════════════════
+  // Phase 3b : Insertion top 3 dans serre_matches
+  // ═══════════════════════════════════════════
+  console.log(`\n--- Phase 3b : Insertion top 3 dans serre_matches (${topMatches.length} lignes) ---`);
+
+  // Vider la table existante
+  await sql`TRUNCATE serre_matches`;
+
+  let insertedTop = 0;
+  for (let i = 0; i < topMatches.length; i += CHUNK) {
+    const slice = topMatches.slice(i, i + CHUNK);
+    const tmIds     = slice.map(m => m.serreId);
+    const tmRangs   = slice.map(m => m.rang);
+    const tmSirens  = slice.map(m => m.siren);
+    const tmSirets  = slice.map(m => m.siret ?? null);
+    const tmNoms    = slice.map(m => m.nom ?? null);
+    const tmDNoms   = slice.map(m => m.dirigeant_nom ?? null);
+    const tmDPrens  = slice.map(m => m.dirigeant_prenom ?? null);
+    const tmComms   = slice.map(m => m.commune ?? null);
+    const tmDists   = slice.map(m => m.distance_km);
+    const tmConfs   = slice.map(m => m.confiance);
+
+    await sql`
+      INSERT INTO serre_matches (serre_id, rang, siren, siret, nom_entreprise, dirigeant_nom, dirigeant_prenom, commune_entreprise, distance_km, confiance)
+      SELECT * FROM (
+        SELECT
+          unnest(${tmIds}::int[]) AS serre_id,
+          unnest(${tmRangs}::smallint[]) AS rang,
+          unnest(${tmSirens}::text[]) AS siren,
+          unnest(${tmSirets}::text[]) AS siret,
+          unnest(${tmNoms}::text[]) AS nom_entreprise,
+          unnest(${tmDNoms}::text[]) AS dirigeant_nom,
+          unnest(${tmDPrens}::text[]) AS dirigeant_prenom,
+          unnest(${tmComms}::text[]) AS commune_entreprise,
+          unnest(${tmDists}::numeric[]) AS distance_km,
+          unnest(${tmConfs}::text[]) AS confiance
+      ) AS v
+    `;
+
+    insertedTop += slice.length;
+    console.log(`  ${insertedTop}/${topMatches.length} insérées...`);
   }
 
   // ═══════════════════════════════════════════

@@ -36,7 +36,7 @@ function nextOverpassUrl(): string {
 }
 
 const TILE_SIZE = 0.5; // degrés (~40km)
-const MAX_MATCH_DISTANCE_M = 500; // distance max serre ↔ centroïde polygone
+const MAX_MATCH_DISTANCE_M = 1000; // distance max serre ↔ centroïde polygone
 const RATE_LIMIT_MS = 3000; // pause entre requêtes Overpass
 
 // ─── Géométrie ───────────────────────────────────────────────
@@ -105,6 +105,12 @@ function buildOverpassQuery(south: number, west: number, north: number, east: nu
   relation["building"="glasshouse"](${bbox});
   way["landuse"="greenhouse_horticulture"](${bbox});
   relation["landuse"="greenhouse_horticulture"](${bbox});
+  way["amenity"="greenhouse"](${bbox});
+  relation["amenity"="greenhouse"](${bbox});
+  way["landuse"="plant_nursery"](${bbox});
+  relation["landuse"="plant_nursery"](${bbox});
+  way["building:use"="greenhouse"](${bbox});
+  relation["building:use"="greenhouse"](${bbox});
 );
 out body;
 >;
@@ -266,7 +272,7 @@ async function main() {
   let tilesDone = 0;
 
   // Accumuler les résultats pour bulk update
-  const results: { serreId: number; areaM2: number }[] = [];
+  const results: { serreId: number; areaM2: number; osmLat: number; osmLon: number }[] = [];
 
   for (const tileKey of tiles) {
     const [tLatStr, tLonStr] = tileKey.split(",");
@@ -304,7 +310,7 @@ async function main() {
           }
 
           if (bestPoly) {
-            results.push({ serreId: serre.id, areaM2: bestPoly.areaM2 });
+            results.push({ serreId: serre.id, areaM2: bestPoly.areaM2, osmLat: bestPoly.centroidLat, osmLon: bestPoly.centroidLon });
             totalMatched++;
           }
         }
@@ -337,14 +343,20 @@ async function main() {
       const slice = results.slice(i, i + CHUNK);
       const ids = slice.map(r => r.serreId);
       const areas = slice.map(r => r.areaM2);
+      const osmLats = slice.map(r => r.osmLat);
+      const osmLons = slice.map(r => r.osmLon);
 
       await sql`
         UPDATE serres AS s SET
-          surface_osm_m2 = v.area
+          surface_osm_m2 = v.area,
+          osm_centroid_lat = v.olat,
+          osm_centroid_lon = v.olon
         FROM (
           SELECT
             unnest(${ids}::int[]) AS id,
-            unnest(${areas}::numeric[]) AS area
+            unnest(${areas}::numeric[]) AS area,
+            unnest(${osmLats}::numeric[]) AS olat,
+            unnest(${osmLons}::numeric[]) AS olon
         ) AS v
         WHERE s.id = v.id
       `;

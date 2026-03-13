@@ -1,0 +1,2 @@
+ALTER TABLE serres ADD COLUMN IF NOT EXISTS osm_centroid_lat NUMERIC(10,7);
+ALTER TABLE serres ADD COLUMN IF NOT EXISTS osm_centroid_lon NUMERIC(10,7);

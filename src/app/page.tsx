@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { Serre, SerresResponse, Stats } from "@/lib/types";
+import type { Serre, SerreMatch, SerresResponse, Stats } from "@/lib/types";
 import { CODE_CULTU_LABELS } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
@@ -436,15 +436,44 @@ export default function Home() {
                           {s.code_cultu}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-700">
-                        {s.nom_entreprise ? (
+                      <td className="px-4 py-3 text-gray-700" colSpan={1}>
+                        {s.top_matches && s.top_matches.length > 1 ? (
+                          <details className="group">
+                            <summary className="cursor-pointer list-none font-medium flex items-center gap-1">
+                              <span className="text-xs text-blue-500 group-open:rotate-90 transition-transform inline-block">▶</span>
+                              {s.top_matches[0]?.nom_entreprise || "—"}
+                              <span className="text-[10px] text-gray-400 ml-1">({s.top_matches.length})</span>
+                            </summary>
+                            <div className="mt-1 space-y-1 text-xs border-l-2 border-blue-200 pl-2">
+                              {s.top_matches.map((m: SerreMatch, idx: number) => (
+                                <div key={idx} className={`${idx === 0 ? "font-medium text-blue-700" : "text-gray-500"}`}>
+                                  #{m.rang} {m.nom_entreprise} <span className="text-gray-400">({Number(m.distance_km).toFixed(1)}km)</span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        ) : s.nom_entreprise ? (
                           <span className="font-medium">{s.nom_entreprise}</span>
                         ) : (
                           <span className="text-gray-300">—</span>
                         )}
                       </td>
                       <td className="px-4 py-3 text-gray-700">
-                        {s.dirigeant_prenom || s.dirigeant_nom ? (
+                        {s.top_matches && s.top_matches.length > 1 ? (
+                          <details className="group">
+                            <summary className="cursor-pointer list-none flex items-center gap-1">
+                              <span className="text-xs text-blue-500 group-open:rotate-90 transition-transform inline-block">▶</span>
+                              {s.top_matches[0]?.dirigeant_prenom} {s.top_matches[0]?.dirigeant_nom}
+                            </summary>
+                            <div className="mt-1 space-y-1 text-xs border-l-2 border-blue-200 pl-2">
+                              {s.top_matches.map((m: SerreMatch, idx: number) => (
+                                <div key={idx} className={`${idx === 0 ? "font-medium text-blue-700" : "text-gray-500"}`}>
+                                  #{m.rang} {m.dirigeant_prenom} {m.dirigeant_nom}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        ) : s.dirigeant_prenom || s.dirigeant_nom ? (
                           <span>
                             {s.dirigeant_prenom} {s.dirigeant_nom}
                           </span>
@@ -489,16 +518,27 @@ export default function Home() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-400 font-mono">
-                        <a
-                          href={`https://www.google.com/maps?q=${s.centroid_lat},${s.centroid_lon}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="hover:text-blue-500"
-                          title="Voir sur Google Maps"
-                        >
-                          {Number(s.centroid_lat).toFixed(4)},{" "}
-                          {Number(s.centroid_lon).toFixed(4)}
-                        </a>
+                        <span className="flex items-center gap-1">
+                          <a
+                            href={`https://www.google.com/maps?q=${s.centroid_lat},${s.centroid_lon}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="hover:text-blue-500"
+                            title="Voir sur Google Maps"
+                          >
+                            {Number(s.centroid_lat).toFixed(4)},{" "}
+                            {Number(s.centroid_lon).toFixed(4)}
+                          </a>
+                          <a
+                            href={`/carte?lat=${s.centroid_lat}&lon=${s.centroid_lon}&zoom=17`}
+                            className="inline-flex items-center justify-center w-6 h-6 rounded bg-green-100 hover:bg-green-200 text-green-700 transition"
+                            title="Voir sur notre carte"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                            </svg>
+                          </a>
+                        </span>
                       </td>
                       {/* BDNB - cellule résumé (toujours visible) */}
                       <td className="px-3 py-3 border-l border-gray-200">

@@ -1,3 +1,15 @@
+export interface SerreMatch {
+  rang: number;
+  siren: string;
+  siret: string | null;
+  nom_entreprise: string | null;
+  dirigeant_nom: string | null;
+  dirigeant_prenom: string | null;
+  commune_entreprise: string | null;
+  distance_km: number | null;
+  confiance: string | null;
+}
+
 export interface Serre {
   id: number;
   id_parcel: string;
@@ -7,6 +19,8 @@ export interface Serre {
   surface_osm_m2: number | null;
   centroid_lat: number;
   centroid_lon: number;
+  osm_centroid_lat: number | null;
+  osm_centroid_lon: number | null;
   commune: string | null;
   code_postal: string | null;
   departement: string | null;
@@ -32,6 +46,7 @@ export interface Serre {
   bdnb_prop_forme: string | null;
   bdnb_adresse: string | null;
   bdnb_distance_m: number | null;
+  top_matches: SerreMatch[];
 }
 
 export interface SerresFilters {

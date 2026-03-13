@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import type { Serre } from "@/lib/types";
 import { CODE_CULTU_LABELS } from "@/lib/types";
 
@@ -41,6 +42,12 @@ function buildOverpassQuery(south: number, west: number, north: number, east: nu
   relation["building"="glasshouse"](${bbox});
   way["landuse"="greenhouse_horticulture"](${bbox});
   relation["landuse"="greenhouse_horticulture"](${bbox});
+  way["amenity"="greenhouse"](${bbox});
+  relation["amenity"="greenhouse"](${bbox});
+  way["landuse"="plant_nursery"](${bbox});
+  relation["landuse"="plant_nursery"](${bbox});
+  way["building:use"="greenhouse"](${bbox});
+  relation["building:use"="greenhouse"](${bbox});
 );
 out body;
 >;
@@ -48,10 +55,24 @@ out skel qt;`;
 }
 
 export default function CartePage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-400">Chargement...</div>}>
+      <CarteContent />
+    </Suspense>
+  );
+}
+
+function CarteContent() {
+  const searchParams = useSearchParams();
+  const initLat = searchParams.get("lat") ? Number(searchParams.get("lat")) : null;
+  const initLon = searchParams.get("lon") ? Number(searchParams.get("lon")) : null;
+  const initZoom = searchParams.get("zoom") ? Number(searchParams.get("zoom")) : null;
+
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersLayer = useRef<L.LayerGroup | null>(null);
   const osmLayer = useRef<L.LayerGroup | null>(null);
+  const targetMarker = useRef<L.Marker | null>(null);
   const [loading, setLoading] = useState(true);
   const [osmLoading, setOsmLoading] = useState(false);
   const [count, setCount] = useState(0);
@@ -76,7 +97,24 @@ export default function CartePage() {
     }
 
     if (!mapInstance.current) {
-      mapInstance.current = L.map(mapRef.current).setView([46.5, 2.5], 6);
+      const startLat = initLat ?? 46.5;
+      const startLon = initLon ?? 2.5;
+      const startZoom = initZoom ?? 6;
+      mapInstance.current = L.map(mapRef.current).setView([startLat, startLon], startZoom);
+
+      // Marqueur cible si ouvert depuis le tableau
+      if (initLat && initLon) {
+        const icon = L.divIcon({
+          className: "",
+          html: '<div style="width:18px;height:18px;border:3px solid #dc2626;border-radius:50%;background:rgba(220,38,38,0.2);"></div>',
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        });
+        targetMarker.current = L.marker([initLat, initLon], { icon })
+          .addTo(mapInstance.current)
+          .bindPopup('<strong style="color:#dc2626">Serre ciblée</strong>')
+          .openPopup();
+      }
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "&copy; OpenStreetMap",
         maxZoom: 19,
@@ -191,8 +229,11 @@ export default function CartePage() {
 
       for (const s of json.data as Serre[]) {
         const color = CODE_COLORS[s.code_cultu] || "#6b7280";
+        // Utiliser centroïde OSM si disponible, sinon centroïde RPG parcelle
+        const markerLat = s.osm_centroid_lat ? Number(s.osm_centroid_lat) : Number(s.centroid_lat);
+        const markerLon = s.osm_centroid_lon ? Number(s.osm_centroid_lon) : Number(s.centroid_lon);
         const marker = L!.circleMarker(
-          [Number(s.centroid_lat), Number(s.centroid_lon)],
+          [markerLat, markerLon],
           {
             radius: Math.max(4, Math.min(12, Number(s.surface_ha) * 5)),
             fillColor: color,

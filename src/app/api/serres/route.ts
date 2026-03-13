@@ -84,7 +84,8 @@ export async function GET(request: NextRequest) {
 
   const data = await sql.unsafe(
     `SELECT s.id, s.id_parcel, s.code_cultu, s.code_group, s.surface_ha, s.surface_osm_m2,
-            s.centroid_lat, s.centroid_lon, s.commune, s.code_postal, s.departement,
+            s.centroid_lat, s.centroid_lon, s.osm_centroid_lat, s.osm_centroid_lon,
+            s.commune, s.code_postal, s.departement,
             s.annee_rpg, s.siren, s.siret, s.nom_entreprise, s.dirigeant_nom,
             s.dirigeant_prenom, s.adresse_entreprise, s.distance_km, s.match_confiance,
             b.batiment_groupe_id as bdnb_id,
@@ -98,9 +99,16 @@ export async function GET(request: NextRequest) {
             b.proprietaire_denomination as bdnb_prop_nom,
             b.proprietaire_forme_juridique as bdnb_prop_forme,
             b.adresse as bdnb_adresse,
-            b.distance_rpg_m as bdnb_distance_m
+            b.distance_rpg_m as bdnb_distance_m,
+            (SELECT COALESCE(json_agg(row_to_json(m) ORDER BY m.rang), '[]'::json)
+             FROM serre_matches m WHERE m.serre_id = s.id) as top_matches
      FROM serres s
-     LEFT JOIN bdnb_serres b ON b.serre_rpg_id = s.id
+     LEFT JOIN LATERAL (
+       SELECT * FROM bdnb_serres b2
+       WHERE b2.serre_rpg_id = s.id
+       ORDER BY b2.distance_rpg_m ASC NULLS LAST
+       LIMIT 1
+     ) b ON true
      ${whereClause}
      ORDER BY ${sortCol} ${sortDir} NULLS LAST
      LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
