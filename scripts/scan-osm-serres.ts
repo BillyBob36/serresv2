@@ -24,10 +24,21 @@ const sql = postgres(
   { max: 5, connect_timeout: 30 }
 );
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
-const TILE_SIZE = 0.5; // degrés
+const OVERPASS_URLS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
+let overpassIdx = 0;
+function nextOverpassUrl(): string {
+  const url = OVERPASS_URLS[overpassIdx % OVERPASS_URLS.length];
+  overpassIdx++;
+  return url;
+}
+
+const TILE_SIZE = 0.5; // degrés (~40km)
 const MAX_MATCH_DISTANCE_M = 500; // distance max serre ↔ centroïde polygone
-const RATE_LIMIT_MS = 2000; // pause entre requêtes Overpass
+const RATE_LIMIT_MS = 3000; // pause entre requêtes Overpass
 
 // ─── Géométrie ───────────────────────────────────────────────
 
@@ -87,7 +98,7 @@ function centroid(coords: [number, number][]): [number, number] {
 
 function buildOverpassQuery(south: number, west: number, north: number, east: number): string {
   const bbox = `${south},${west},${north},${east}`;
-  return `[out:json][timeout:120];
+  return `[out:json][timeout:30];
 (
   way["building"="greenhouse"](${bbox});
   relation["building"="greenhouse"](${bbox});
@@ -132,18 +143,24 @@ interface GreenhousePolygon {
   tags: Record<string, string>;
 }
 
-async function queryOverpass(query: string, retries = 3): Promise<OsmElement[]> {
+async function queryOverpass(query: string, retries = 5): Promise<OsmElement[]> {
   for (let attempt = 1; attempt <= retries; attempt++) {
+    const url = nextOverpassUrl();
     try {
-      const resp = await fetch(OVERPASS_URL, {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+
+      const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: `data=${encodeURIComponent(query)}`,
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
 
       if (resp.status === 429 || resp.status === 504) {
-        const wait = attempt * 10000;
-        console.log(`  Overpass ${resp.status}, retry in ${wait / 1000}s...`);
+        const wait = attempt * 8000;
+        console.log(`  [${new URL(url).hostname}] ${resp.status}, retry in ${wait / 1000}s...`);
         await sleep(wait);
         continue;
       }
@@ -155,8 +172,11 @@ async function queryOverpass(query: string, retries = 3): Promise<OsmElement[]> 
       const json = await resp.json();
       return json.elements || [];
     } catch (err: any) {
-      if (attempt === retries) throw err;
-      console.log(`  Erreur Overpass (tentative ${attempt}): ${err.message}`);
+      if (attempt === retries) {
+        console.log(`  Abandon tuile après ${retries} tentatives: ${err.message}`);
+        return [];
+      }
+      console.log(`  [${new URL(url).hostname}] Erreur (${attempt}/${retries}): ${err.message}`);
       await sleep(attempt * 5000);
     }
   }
