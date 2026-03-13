@@ -24,8 +24,8 @@ export default function Home() {
   const [sortBy, setSortBy] = useState("surface_ha");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [showBdnb, setShowBdnb] = useState(false);
-  const [showEnrich, setShowEnrich] = useState(false);
   const [surfaceUnit, setSurfaceUnit] = useState<"ha" | "m2">("ha");
+  const [expandedSerres, setExpandedSerres] = useState<Set<number>>(new Set());
   const [statutFilter, setStatutFilter] = useState("");
 
   // Prospection state (keyed by serre_id)
@@ -198,6 +198,15 @@ export default function Home() {
     setSearch("");
     setStatutFilter("");
     setPage(1);
+  };
+
+  const toggleExpand = (serreId: number) => {
+    setExpandedSerres((prev) => {
+      const next = new Set(prev);
+      if (next.has(serreId)) next.delete(serreId);
+      else next.add(serreId);
+      return next;
+    });
   };
 
   const exportCsv = () => {
@@ -435,426 +444,233 @@ export default function Home() {
         {/* Tableau */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm border-collapse">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  {[
-                    { key: "departement", label: "Dept", tooltip: "Numéro du département français où se trouve la serre (ex: 84 = Vaucluse)." },
-                    { key: "commune", label: "Commune", tooltip: "Nom de la ville ou du village où est localisée la serre." },
-                    { key: "code_cultu", label: "Type", tooltip: "Type de culture pratiquée sous serre : CSS = hors sol, FLA = fleurs, PEP = pépinières." },
-                  ].map(({ key, label, tooltip }) => (
-                    <th
-                      key={key}
-                      onClick={() => handleSort(key)}
-                      className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none"
-                      title={tooltip}
-                    >
-                      {label}
-                      <SortIcon col={key} />
-                    </th>
-                  ))}
-                  <th
-                    onClick={() => handleSort("nom_entreprise")}
-                    className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none min-w-[280px]"
-                    title="Entreprises candidates (top 3 les plus proches) avec leur dirigeant"
-                  >
-                    Prospects <SortIcon col="nom_entreprise" />
+                  {/* ── GROUPE GAUCHE : Parcelle ── */}
+                  <th onClick={() => handleSort("departement")} className="px-2 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none w-16" title="Département">
+                    Dept <SortIcon col="departement" />
                   </th>
-                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap" title="Statut de prospection">Statut</th>
-                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap" title="Validation : le prospect correspond-il à la parcelle ?">Match</th>
-                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap" title="Notes et journal d'appels">Notes</th>
-                  {/* Colonne Surface parcelle avec toggle HA/m² */}
-                  <th
-                    onClick={() => handleSort("surface_ha")}
-                    className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none"
-                    title="Superficie de la parcelle agricole (RPG) déclarée par l'exploitant. Cliquez sur HA / m² pour changer l'unité."
-                  >
+                  <th onClick={() => handleSort("commune")} className="px-3 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none" title="Commune">
+                    Commune <SortIcon col="commune" />
+                  </th>
+                  <th onClick={() => handleSort("code_cultu")} className="px-2 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none w-16" title="Type de culture">
+                    Type <SortIcon col="code_cultu" />
+                  </th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-600" title="Coordonnées GPS">Coords</th>
+                  <th onClick={() => handleSort("surface_ha")} className="px-3 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none" title="Surface parcelle RPG">
                     <span className="flex items-center gap-1">
-                      Surf. parcelle
-                      <SortIcon col="surface_ha" />
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setSurfaceUnit(surfaceUnit === "ha" ? "m2" : "ha"); }}
-                        className="ml-1 px-1.5 py-0.5 text-xs rounded bg-gray-200 hover:bg-blue-200 text-gray-600 hover:text-blue-700 font-mono"
-                        title="Basculer entre hectares et mètres carrés"
-                      >
-                        {surfaceUnit === "ha" ? "HA" : "m²"}
+                      Surf. parcelle <SortIcon col="surface_ha" />
+                      <button onClick={(e) => { e.stopPropagation(); setSurfaceUnit(surfaceUnit === "ha" ? "m2" : "ha"); }} className="ml-1 px-1.5 py-0.5 text-xs rounded bg-gray-200 hover:bg-blue-200 text-gray-600 hover:text-blue-700 font-mono" title="Basculer HA/m²">
+                        {surfaceUnit === "ha" ? "HA" : "m\u00B2"}
                       </button>
                     </span>
                   </th>
-                  {/* Colonne Surface serre (OSM) */}
-                  <th
-                    className="px-4 py-3 text-left font-medium text-gray-600"
-                    title="Surface réelle de la serre détectée via OpenStreetMap (contours du bâtiment). Calculée automatiquement à partir des polygones cartographiques."
-                  >
+                  <th className="px-3 py-3 text-left font-medium text-gray-600" title="Surface serre OSM">
                     <span className="flex items-center gap-1">
-                      Surf. serre
-                      <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-emerald-100 text-emerald-700 font-medium">OSM</span>
+                      Surf. serre <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-emerald-100 text-emerald-700 font-medium">OSM</span>
                     </span>
                   </th>
-                  <th
-                    className="px-4 py-3 text-left font-medium text-gray-600"
-                    title="Niveau de confiance du rapprochement entre la parcelle RPG et l'entreprise trouvée. Haute = très fiable, Moyenne = probable, Basse = à vérifier. La distance en km indique l'écart entre la serre et le siège de l'entreprise."
-                  >
-                    Confiance
-                  </th>
-                  <th
-                    className="px-4 py-3 text-left font-medium text-gray-600"
-                    title="Coordonnées GPS du centre de la parcelle (latitude, longitude). Cliquez pour ouvrir dans Google Maps."
-                  >
-                    Coords
-                  </th>
-                  {/* BDNB - colonnes rétractables */}
-                  <th
-                    onClick={() => setShowBdnb(!showBdnb)}
-                    className="px-3 py-3 text-left font-medium text-indigo-600 cursor-pointer hover:text-indigo-800 select-none border-l border-gray-200 bg-indigo-50/50 whitespace-nowrap"
-                    title="Base de Données Nationale des Bâtiments (IGN) — données officielles sur les bâtiments physiques. Cliquez pour afficher ou masquer les détails."
-                  >
+                  <th onClick={() => setShowBdnb(!showBdnb)} className="px-3 py-3 text-left font-medium text-indigo-600 cursor-pointer hover:text-indigo-800 select-none border-l border-gray-200 bg-indigo-50/50 whitespace-nowrap" title="BDNB (cliquez pour deplier)">
                     {showBdnb ? "\u25BC" : "\u25B6"} BDNB
                   </th>
                   {showBdnb && (
                     <>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Surface couverte par le bâtiment-serre selon le cadastre IGN, exprimée en mètres carrés.">Surface (m²)</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Hauteur moyenne et hauteur maximale du bâtiment-serre en mètres, mesurées par l'IGN.">Hauteur</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Identifiant de la parcelle cadastrale sur laquelle est construite la serre (référence du cadastre français).">Parcelle cad.</th>
-                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap" title="Adresse postale du bâtiment-serre selon la Base Adresse Nationale (BAN).">Adresse</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Surface (m\u00B2)</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Hauteur</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Parcelle cad.</th>
+                      <th className="px-3 py-3 text-left font-medium text-indigo-500 text-xs bg-indigo-50/30 whitespace-nowrap">Adresse</th>
                     </>
                   )}
-                  {/* Enrichissement - colonnes rétractables */}
-                  <th
-                    onClick={() => setShowEnrich(!showEnrich)}
-                    className="px-3 py-3 text-left font-medium text-orange-600 cursor-pointer hover:text-orange-800 select-none border-l border-gray-200 bg-orange-50/50 whitespace-nowrap"
-                    title="Données d'enrichissement (Pappers + Google Places). Cliquez pour afficher ou masquer."
-                  >
-                    {showEnrich ? "\u25BC" : "\u25B6"} Enrichissement
+                  {/* ── GROUPE DROITE : Prospects (1 ligne/prospect) ── */}
+                  <th onClick={() => handleSort("nom_entreprise")} className="px-3 py-3 text-left font-medium text-gray-700 cursor-pointer hover:text-gray-900 select-none border-l-2 border-blue-300 bg-blue-50/40 min-w-[180px]" title="Entreprise prospect">
+                    Prospect <SortIcon col="nom_entreprise" />
                   </th>
-                  {showEnrich && (
-                    <>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Forme jur.</th>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">NAF</th>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Effectifs</th>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">CA</th>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Telephone</th>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Site web</th>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Note Google</th>
-                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/30 whitespace-nowrap">Dirigeants</th>
-                    </>
-                  )}
+                  <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Dirigeant</th>
+                  <th className="px-3 py-3 text-center font-medium text-orange-600 bg-orange-50/30 whitespace-nowrap w-16">Enrichir</th>
+                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Telephone</th>
+                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Site web</th>
+                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Google</th>
+                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Forme jur.</th>
+                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">NAF</th>
+                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Effectifs</th>
+                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">CA</th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Statut</th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Match</th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Notes</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr>
-                    <td colSpan={99} className="px-4 py-8 text-center text-gray-400">
-                      Chargement...
-                    </td>
-                  </tr>
+                  <tr><td colSpan={99} className="px-4 py-8 text-center text-gray-400">Chargement...</td></tr>
                 ) : data.length === 0 ? (
-                  <tr>
-                    <td colSpan={99} className="px-4 py-8 text-center text-gray-400">
-                      Aucun resultat
-                    </td>
-                  </tr>
+                  <tr><td colSpan={99} className="px-4 py-8 text-center text-gray-400">Aucun resultat</td></tr>
                 ) : (
-                  data.map((s) => (
-                    <tr
-                      key={s.id}
-                      className="border-b border-gray-100 hover:bg-blue-50/30 transition"
-                    >
-                      <td className="px-4 py-3 font-medium text-gray-900">
-                        {s.departement || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-gray-700">
-                        {s.commune || "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                            s.code_cultu === "CSS"
-                              ? "bg-purple-100 text-purple-700"
-                              : s.code_cultu === "FLA"
-                                ? "bg-pink-100 text-pink-700"
-                                : "bg-green-100 text-green-700"
-                          }`}
-                          title={CODE_CULTU_LABELS[s.code_cultu] || s.code_cultu}
-                        >
-                          {s.code_cultu}
-                        </span>
-                      </td>
-                      {/* Colonne Prospects unifiée */}
-                      <td className="px-4 py-3 text-gray-700">
-                        {s.top_matches && s.top_matches.length > 0 ? (
-                          <div className="space-y-1">
-                            {/* #1 toujours visible */}
-                            {(() => { const m = s.top_matches[0]; return (
+                  data.flatMap((s) => {
+                    const matches: SerreMatch[] = s.top_matches?.length > 0
+                      ? s.top_matches
+                      : s.nom_entreprise
+                        ? [{ siren: s.siren || "", nom_entreprise: s.nom_entreprise, dirigeant_prenom: s.dirigeant_prenom || null, dirigeant_nom: s.dirigeant_nom || null, distance_km: Number(s.distance_km) || 0, rang: 1 } as SerreMatch]
+                        : [];
+                    const isExpanded = expandedSerres.has(s.id);
+                    const hasMultiple = matches.length > 1;
+                    const visibleMatches = hasMultiple && !isExpanded ? [matches[0]] : matches;
+                    const rowSpan = visibleMatches.length || 1;
+
+                    const leftCells = (rs: number) => (
+                      <>
+                        <td rowSpan={rs} className="px-2 py-3 font-medium text-gray-900 text-center align-middle">{s.departement || "\u2014"}</td>
+                        <td rowSpan={rs} className="px-3 py-3 text-gray-700 align-middle">{s.commune || "\u2014"}</td>
+                        <td rowSpan={rs} className="px-2 py-3 text-center align-middle">
+                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${s.code_cultu === "CSS" ? "bg-purple-100 text-purple-700" : s.code_cultu === "FLA" ? "bg-pink-100 text-pink-700" : "bg-green-100 text-green-700"}`} title={CODE_CULTU_LABELS[s.code_cultu] || s.code_cultu}>{s.code_cultu}</span>
+                        </td>
+                        <td rowSpan={rs} className="px-3 py-3 text-xs text-gray-400 font-mono align-middle">
+                          <span className="flex items-center gap-1">
+                            <a href={`https://www.google.com/maps?q=${s.centroid_lat},${s.centroid_lon}`} target="_blank" rel="noopener noreferrer" className="hover:text-blue-500" title="Google Maps">
+                              {Number(s.centroid_lat).toFixed(4)}, {Number(s.centroid_lon).toFixed(4)}
+                            </a>
+                            <a href={`/carte?lat=${s.centroid_lat}&lon=${s.centroid_lon}&zoom=17`} className="inline-flex items-center justify-center w-6 h-6 rounded bg-green-100 hover:bg-green-200 text-green-700 transition" title="Voir sur notre carte">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+                            </a>
+                          </span>
+                        </td>
+                        <td rowSpan={rs} className="px-3 py-3 text-gray-700 font-mono align-middle">
+                          {surfaceUnit === "ha" ? `${Number(s.surface_ha).toFixed(2)} ha` : `${Math.round(Number(s.surface_ha) * 10000).toLocaleString("fr-FR")} m\u00B2`}
+                        </td>
+                        <td rowSpan={rs} className="px-3 py-3 text-gray-700 font-mono align-middle">
+                          {s.surface_osm_m2 ? (
+                            <span className="text-emerald-700 font-medium">{surfaceUnit === "ha" ? `${(Number(s.surface_osm_m2) / 10000).toFixed(2)} ha` : `${Math.round(Number(s.surface_osm_m2)).toLocaleString("fr-FR")} m\u00B2`}</span>
+                          ) : <span className="text-gray-300">{"\u2014"}</span>}
+                        </td>
+                        <td rowSpan={rs} className="px-3 py-3 border-l border-gray-200 align-middle">
+                          {s.bdnb_id ? (
+                            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700" title={`BDNB: ${s.bdnb_nature || "Serre"} - ${s.bdnb_distance_m ? Math.round(Number(s.bdnb_distance_m)) + "m" : ""}`}>IGN {s.bdnb_prop_siren ? "+" : ""}</span>
+                          ) : <span className="text-gray-300 text-xs">{"\u2014"}</span>}
+                        </td>
+                        {showBdnb && (
+                          <>
+                            <td rowSpan={rs} className="px-3 py-3 text-xs text-gray-600 font-mono bg-indigo-50/10 align-middle">{s.bdnb_surface_m2 ? `${Number(s.bdnb_surface_m2).toLocaleString("fr-FR")} m\u00B2` : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                            <td rowSpan={rs} className="px-3 py-3 text-xs text-gray-600 bg-indigo-50/10 align-middle">{s.bdnb_hauteur_moy ? `${s.bdnb_hauteur_moy}m (max ${s.bdnb_hauteur_max}m)` : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                            <td rowSpan={rs} className="px-3 py-3 text-xs font-mono text-gray-600 bg-indigo-50/10 align-middle">{s.bdnb_parcelle || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                            <td rowSpan={rs} className="px-3 py-3 text-xs text-gray-600 bg-indigo-50/10 max-w-[200px] truncate align-middle">{s.bdnb_adresse || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          </>
+                        )}
+                      </>
+                    );
+
+                    const rightCells = (m: SerreMatch | null, isFirst: boolean) => {
+                      const e = m?.siren ? enrichCache[m.siren] : null;
+                      return (
+                        <>
+                          <td className="px-3 py-2 border-l-2 border-blue-300 bg-blue-50/10">
+                            {m ? (
                               <div className="flex items-center gap-2 text-xs">
-                                <span className="font-semibold text-blue-700 truncate max-w-[160px]" title={m.nom_entreprise || ""}>{m.nom_entreprise || "—"}</span>
-                                <span className="text-gray-400">—</span>
-                                <span className="text-gray-600 truncate max-w-[120px]">{m.dirigeant_prenom} {m.dirigeant_nom}</span>
+                                <span className="font-semibold text-blue-700 truncate max-w-[160px]" title={m.nom_entreprise || ""}>{m.nom_entreprise || "\u2014"}</span>
                                 <span className="text-gray-400 whitespace-nowrap">({Number(m.distance_km).toFixed(1)}km)</span>
-                                <button
-                                  onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon))}
-                                  disabled={!!enrichCache[m.siren] || enrichLoading === m.siren}
-                                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${enrichCache[m.siren] ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700 hover:bg-orange-200"}`}
-                                  title={enrichCache[m.siren] ? "Enrichi" : "Enrichir via Pappers + Google"}
-                                >
-                                  {enrichLoading === m.siren ? "..." : enrichCache[m.siren] ? "Enrichi" : "Enrichir"}
-                                </button>
+                                {isFirst && hasMultiple && (
+                                  <button onClick={() => toggleExpand(s.id)} className="ml-auto text-blue-500 hover:text-blue-700 text-[11px] whitespace-nowrap font-medium">
+                                    {isExpanded ? "\u25B2 replier" : `\u25BC +${matches.length - 1}`}
+                                  </button>
+                                )}
                               </div>
-                            ); })()}
-                            {/* #2, #3 expandable */}
-                            {s.top_matches.length > 1 && (
-                              <details className="group">
-                                <summary className="cursor-pointer list-none text-[10px] text-blue-500 hover:text-blue-700">
-                                  + {s.top_matches.length - 1} autre(s)
-                                </summary>
-                                <div className="mt-1 space-y-1 border-l-2 border-blue-200 pl-2">
-                                  {s.top_matches.slice(1).map((m: SerreMatch, idx: number) => (
-                                    <div key={idx} className="flex items-center gap-2 text-[11px] text-gray-500">
-                                      <span className="font-medium truncate max-w-[140px]" title={m.nom_entreprise || ""}>{m.nom_entreprise}</span>
-                                      <span className="text-gray-300">—</span>
-                                      <span className="truncate max-w-[100px]">{m.dirigeant_prenom} {m.dirigeant_nom}</span>
-                                      <span className="text-gray-400 whitespace-nowrap">({Number(m.distance_km).toFixed(1)}km)</span>
-                                      <button
-                                        onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon))}
-                                        disabled={!!enrichCache[m.siren] || enrichLoading === m.siren}
-                                        className={`px-1 py-0.5 rounded text-[9px] font-medium ${enrichCache[m.siren] ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700 hover:bg-orange-200"}`}
-                                      >
-                                        {enrichLoading === m.siren ? "..." : enrichCache[m.siren] ? "Enrichi" : "Enrichir"}
-                                      </button>
+                            ) : <span className="text-gray-300">{"\u2014"}</span>}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-gray-600 bg-blue-50/10">
+                            {m ? (`${m.dirigeant_prenom || ""} ${m.dirigeant_nom || ""}`.trim() || "\u2014") : "\u2014"}
+                          </td>
+                          <td className="px-3 py-2 text-center bg-orange-50/10">
+                            {m?.siren ? (
+                              <button
+                                onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon))}
+                                disabled={!!e || enrichLoading === m.siren}
+                                className={`px-2 py-1 rounded text-[10px] font-medium ${e ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700 hover:bg-orange-200"}`}
+                                title={e ? "Donnees enrichies" : "Enrichir via Pappers + Google"}
+                              >
+                                {enrichLoading === m.siren ? "..." : e ? "\u2713" : "Enrichir"}
+                              </button>
+                            ) : <span className="text-gray-300">{"\u2014"}</span>}
+                          </td>
+                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.telephone ? <a href={`tel:${e.telephone}`} className="text-blue-600 hover:underline">{e.telephone}</a> : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10 max-w-[120px] truncate">{e?.site_web ? <a href={e.site_web} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{e.site_web.replace(/^https?:\/\//, "")}</a> : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.note_google ? <span>{e.note_google}/5 <span className="text-gray-400">({e.avis_count})</span></span> : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.forme_juridique || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10" title={e?.libelle_naf || ""}>{e?.code_naf || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.tranche_effectifs || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          <td className="px-3 py-2 text-xs text-gray-600 font-mono bg-orange-50/10">{e?.chiffre_affaires ? `${Number(e.chiffre_affaires).toLocaleString("fr-FR")} \u20AC` : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          <td className="px-3 py-2 bg-blue-50/10">
+                            <select
+                              value={prospections[s.id]?.statut || "nouveau"}
+                              onChange={(ev) => updateProspection(s.id, "statut", ev.target.value)}
+                              className={`text-[11px] rounded px-1.5 py-1 border-0 font-medium cursor-pointer ${
+                                ({ nouveau: "bg-gray-100 text-gray-600", a_contacter: "bg-blue-100 text-blue-700", appele: "bg-yellow-100 text-yellow-700", interesse: "bg-green-100 text-green-700", pas_interesse: "bg-red-100 text-red-700", injoignable: "bg-orange-100 text-orange-700", client: "bg-purple-100 text-purple-700" } as Record<string, string>)[prospections[s.id]?.statut || "nouveau"] || "bg-gray-100 text-gray-600"
+                              }`}
+                            >
+                              <option value="nouveau">Nouveau</option>
+                              <option value="a_contacter">A contacter</option>
+                              <option value="appele">Appele</option>
+                              <option value="interesse">Interesse</option>
+                              <option value="pas_interesse">Pas interesse</option>
+                              <option value="injoignable">Injoignable</option>
+                              <option value="client">Client</option>
+                            </select>
+                          </td>
+                          <td className="px-3 py-2 bg-blue-50/10">
+                            <div className="flex gap-1">
+                              {[
+                                { val: "confirme", icon: "\u2705", title: "Bon match" },
+                                { val: "mauvais_match", icon: "\u274C", title: "Mauvais match" },
+                              ].map(({ val, icon, title }) => (
+                                <button key={val} onClick={() => updateProspection(s.id, "match_valide", val)} className={`w-6 h-6 rounded text-xs ${(prospections[s.id]?.match_valide || "incertain") === val ? "ring-2 ring-blue-400 bg-blue-50" : "opacity-40 hover:opacity-100"}`} title={title}>{icon}</button>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 relative bg-blue-50/10">
+                            <button
+                              onClick={() => { if (openNotes === s.id) { setOpenNotes(null); } else { setOpenNotes(s.id); fetchNotes(s.id); setNoteText(""); } }}
+                              className={`text-xs px-2 py-1 rounded ${openNotes === s.id ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                              title="Journal de notes"
+                            >
+                              {notes[s.id]?.length ? `\uD83D\uDCDD ${notes[s.id].length}` : "\uD83D\uDCDD"}
+                            </button>
+                            {openNotes === s.id && (
+                              <div className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-72 right-0">
+                                <div className="max-h-40 overflow-y-auto space-y-2 mb-2">
+                                  {(notes[s.id] || []).length === 0 && <p className="text-xs text-gray-400">Aucune note</p>}
+                                  {(notes[s.id] || []).map((n) => (
+                                    <div key={n.id} className="text-xs border-b border-gray-100 pb-1">
+                                      <span className="text-gray-400">{new Date(n.created_at).toLocaleDateString("fr-FR")} {new Date(n.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span>
+                                      {n.username && <span className="text-blue-500 ml-1">{n.username}</span>}
+                                      <p className="text-gray-700 mt-0.5">{n.note}</p>
                                     </div>
                                   ))}
                                 </div>
-                              </details>
-                            )}
-                          </div>
-                        ) : s.nom_entreprise ? (
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="font-semibold">{s.nom_entreprise}</span>
-                            <span className="text-gray-400">—</span>
-                            <span className="text-gray-600">{s.dirigeant_prenom} {s.dirigeant_nom}</span>
-                          </div>
-                        ) : (
-                          <span className="text-gray-300">—</span>
-                        )}
-                      </td>
-                      {/* Colonne Statut */}
-                      <td className="px-3 py-3">
-                        <select
-                          value={prospections[s.id]?.statut || "nouveau"}
-                          onChange={(e) => updateProspection(s.id, "statut", e.target.value)}
-                          className={`text-[11px] rounded px-1.5 py-1 border-0 font-medium cursor-pointer ${
-                            { nouveau: "bg-gray-100 text-gray-600", a_contacter: "bg-blue-100 text-blue-700", appele: "bg-yellow-100 text-yellow-700", interesse: "bg-green-100 text-green-700", pas_interesse: "bg-red-100 text-red-700", injoignable: "bg-orange-100 text-orange-700", client: "bg-purple-100 text-purple-700" }[prospections[s.id]?.statut || "nouveau"] || "bg-gray-100 text-gray-600"
-                          }`}
-                        >
-                          <option value="nouveau">Nouveau</option>
-                          <option value="a_contacter">A contacter</option>
-                          <option value="appele">Appele</option>
-                          <option value="interesse">Interesse</option>
-                          <option value="pas_interesse">Pas interesse</option>
-                          <option value="injoignable">Injoignable</option>
-                          <option value="client">Client</option>
-                        </select>
-                      </td>
-                      {/* Colonne Match validation */}
-                      <td className="px-3 py-3">
-                        <div className="flex gap-1">
-                          {[
-                            { val: "confirme", icon: "\u2705", title: "Bon match" },
-                            { val: "mauvais_match", icon: "\u274C", title: "Mauvais match" },
-                            { val: "incertain", icon: "\u2753", title: "Incertain" },
-                          ].map(({ val, icon, title }) => (
-                            <button
-                              key={val}
-                              onClick={() => updateProspection(s.id, "match_valide", val)}
-                              className={`w-6 h-6 rounded text-xs ${(prospections[s.id]?.match_valide || "incertain") === val ? "ring-2 ring-blue-400 bg-blue-50" : "opacity-40 hover:opacity-100"}`}
-                              title={title}
-                            >
-                              {icon}
-                            </button>
-                          ))}
-                        </div>
-                      </td>
-                      {/* Colonne Notes */}
-                      <td className="px-3 py-3 relative">
-                        <button
-                          onClick={() => { if (openNotes === s.id) { setOpenNotes(null); } else { setOpenNotes(s.id); fetchNotes(s.id); setNoteText(""); } }}
-                          className={`text-xs px-2 py-1 rounded ${openNotes === s.id ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
-                          title="Journal de notes"
-                        >
-                          {notes[s.id]?.length ? `\uD83D\uDCDD ${notes[s.id].length}` : "\uD83D\uDCDD"}
-                        </button>
-                        {openNotes === s.id && (
-                          <div className="absolute z-50 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl p-3 w-72 right-0">
-                            <div className="max-h-40 overflow-y-auto space-y-2 mb-2">
-                              {(notes[s.id] || []).length === 0 && <p className="text-xs text-gray-400">Aucune note</p>}
-                              {(notes[s.id] || []).map((n) => (
-                                <div key={n.id} className="text-xs border-b border-gray-100 pb-1">
-                                  <span className="text-gray-400">{new Date(n.created_at).toLocaleDateString("fr-FR")} {new Date(n.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span>
-                                  {n.username && <span className="text-blue-500 ml-1">{n.username}</span>}
-                                  <p className="text-gray-700 mt-0.5">{n.note}</p>
+                                <div className="flex gap-1">
+                                  <input type="text" value={noteText} onChange={(ev) => setNoteText(ev.target.value)} onKeyDown={(ev) => { if (ev.key === "Enter") addNote(s.id); }} placeholder="Ajouter une note..." className="flex-1 text-xs px-2 py-1 border border-gray-300 rounded text-gray-900 bg-white" />
+                                  <button onClick={() => addNote(s.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">OK</button>
                                 </div>
-                              ))}
-                            </div>
-                            <div className="flex gap-1">
-                              <input
-                                type="text"
-                                value={noteText}
-                                onChange={(e) => setNoteText(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") addNote(s.id); }}
-                                placeholder="Ajouter une note..."
-                                className="flex-1 text-xs px-2 py-1 border border-gray-300 rounded text-gray-900 bg-white"
-                              />
-                              <button onClick={() => addNote(s.id)} className="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700">OK</button>
-                            </div>
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-gray-700 font-mono">
-                        {surfaceUnit === "ha"
-                          ? `${Number(s.surface_ha).toFixed(2)} ha`
-                          : `${Math.round(Number(s.surface_ha) * 10000).toLocaleString("fr-FR")} m²`}
-                      </td>
-                      <td className="px-4 py-3 text-gray-700 font-mono">
-                        {s.surface_osm_m2 ? (
-                          <span className="text-emerald-700 font-medium">
-                            {surfaceUnit === "ha"
-                              ? `${(Number(s.surface_osm_m2) / 10000).toFixed(2)} ha`
-                              : `${Math.round(Number(s.surface_osm_m2)).toLocaleString("fr-FR")} m²`}
-                          </span>
-                        ) : (
-                          <span className="text-gray-300">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {s.match_confiance ? (
-                          <span
-                            className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                              s.match_confiance === "haute"
-                                ? "bg-green-100 text-green-700"
-                                : s.match_confiance === "moyenne"
-                                  ? "bg-yellow-100 text-yellow-700"
-                                  : "bg-red-100 text-red-700"
-                            }`}
-                          >
-                            {s.match_confiance}
-                            {s.distance_km
-                              ? ` (${Number(s.distance_km).toFixed(1)}km)`
-                              : ""}
-                          </span>
-                        ) : (
-                          <span className="text-gray-300">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-400 font-mono">
-                        <span className="flex items-center gap-1">
-                          <a
-                            href={`https://www.google.com/maps?q=${s.centroid_lat},${s.centroid_lon}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:text-blue-500"
-                            title="Voir sur Google Maps"
-                          >
-                            {Number(s.centroid_lat).toFixed(4)},{" "}
-                            {Number(s.centroid_lon).toFixed(4)}
-                          </a>
-                          <a
-                            href={`/carte?lat=${s.centroid_lat}&lon=${s.centroid_lon}&zoom=17`}
-                            className="inline-flex items-center justify-center w-6 h-6 rounded bg-green-100 hover:bg-green-200 text-green-700 transition"
-                            title="Voir sur notre carte"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                            </svg>
-                          </a>
-                        </span>
-                      </td>
-                      {/* BDNB - cellule résumé (toujours visible) */}
-                      <td className="px-3 py-3 border-l border-gray-200">
-                        {s.bdnb_id ? (
-                          <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-indigo-100 text-indigo-700" title={`BDNB: ${s.bdnb_nature || "Serre"} - ${s.bdnb_distance_m ? Math.round(Number(s.bdnb_distance_m)) + "m" : ""}`}>
-                            IGN {s.bdnb_prop_siren ? "+" : ""}
-                          </span>
-                        ) : (
-                          <span className="text-gray-300 text-xs">—</span>
-                        )}
-                      </td>
-                      {/* BDNB - colonnes déployées */}
-                      {showBdnb && (
-                        <>
-                          <td className="px-3 py-3 text-xs text-gray-600 font-mono bg-indigo-50/10">
-                            {s.bdnb_surface_m2 ? `${Number(s.bdnb_surface_m2).toLocaleString("fr-FR")} m²` : <span className="text-gray-300">—</span>}
-                          </td>
-                          <td className="px-3 py-3 text-xs text-gray-600 bg-indigo-50/10">
-                            {s.bdnb_hauteur_moy ? `${s.bdnb_hauteur_moy}m (max ${s.bdnb_hauteur_max}m)` : <span className="text-gray-300">—</span>}
-                          </td>
-                          <td className="px-3 py-3 text-xs font-mono text-gray-600 bg-indigo-50/10">
-                            {s.bdnb_parcelle || <span className="text-gray-300">—</span>}
-                          </td>
-                          <td className="px-3 py-3 text-xs text-gray-600 bg-indigo-50/10 max-w-[200px] truncate">
-                            {s.bdnb_adresse || <span className="text-gray-300">—</span>}
+                              </div>
+                            )}
                           </td>
                         </>
-                      )}
-                      {/* Enrichissement - cellule résumé */}
-                      {(() => {
-                        const siren = s.top_matches?.[0]?.siren || s.siren;
-                        const e = siren ? enrichCache[siren] : null;
-                        return (
-                          <>
-                            <td className="px-3 py-3 border-l border-gray-200">
-                              {e ? (
-                                <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700" title={`${e.source} — ${e.forme_juridique || ""}`}>
-                                  Enrichi
-                                </span>
-                              ) : (
-                                <span className="text-gray-300 text-xs">—</span>
-                              )}
-                            </td>
-                            {showEnrich && (
-                              <>
-                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
-                                  {e?.forme_juridique || <span className="text-gray-300">—</span>}
-                                </td>
-                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10" title={e?.libelle_naf || ""}>
-                                  {e?.code_naf || <span className="text-gray-300">—</span>}
-                                </td>
-                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
-                                  {e?.tranche_effectifs || <span className="text-gray-300">—</span>}
-                                </td>
-                                <td className="px-3 py-3 text-xs text-gray-600 font-mono bg-orange-50/10">
-                                  {e?.chiffre_affaires ? `${Number(e.chiffre_affaires).toLocaleString("fr-FR")} \u20AC` : <span className="text-gray-300">—</span>}
-                                </td>
-                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
-                                  {e?.telephone ? (
-                                    <a href={`tel:${e.telephone}`} className="text-blue-600 hover:underline">{e.telephone}</a>
-                                  ) : <span className="text-gray-300">—</span>}
-                                </td>
-                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10 max-w-[150px] truncate">
-                                  {e?.site_web ? (
-                                    <a href={e.site_web} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{e.site_web.replace(/^https?:\/\//, "")}</a>
-                                  ) : <span className="text-gray-300">—</span>}
-                                </td>
-                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10">
-                                  {e?.note_google ? (
-                                    <span>{e.note_google}/5 <span className="text-gray-400">({e.avis_count})</span></span>
-                                  ) : <span className="text-gray-300">—</span>}
-                                </td>
-                                <td className="px-3 py-3 text-xs text-gray-600 bg-orange-50/10 max-w-[200px]">
-                                  {e?.dirigeants && Array.isArray(e.dirigeants) ? (
-                                    <div className="space-y-0.5">
-                                      {(e.dirigeants as any[]).slice(0, 3).map((d: any, i: number) => (
-                                        <div key={i} className="truncate">{d.prenom} {d.nom} <span className="text-gray-400">({d.qualite})</span></div>
-                                      ))}
-                                    </div>
-                                  ) : <span className="text-gray-300">—</span>}
-                                </td>
-                              </>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </tr>
-                  ))
+                      );
+                    };
+
+                    if (visibleMatches.length === 0) {
+                      return [
+                        <tr key={s.id} className="border-b border-gray-100 hover:bg-blue-50/30 transition">
+                          {leftCells(1)}
+                          {rightCells(null, true)}
+                        </tr>
+                      ];
+                    }
+
+                    return visibleMatches.map((m, idx) => (
+                      <tr key={`${s.id}_${idx}`} className={`hover:bg-blue-50/30 transition ${idx === 0 ? "border-t border-gray-200" : ""} ${idx === rowSpan - 1 ? "border-b border-gray-200" : "border-b border-gray-100/50"}`}>
+                        {idx === 0 && leftCells(rowSpan)}
+                        {rightCells(m, idx === 0)}
+                      </tr>
+                    ));
+                  })
                 )}
               </tbody>
             </table>
