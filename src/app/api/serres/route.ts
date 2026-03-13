@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
   const total = Number(countResult[0].total);
 
   const data = await sql.unsafe(
-    `SELECT s.id, s.id_parcel, s.code_cultu, s.code_group, s.surface_ha,
+    `SELECT s.id, s.id_parcel, s.code_cultu, s.code_group, s.surface_ha, s.surface_osm_m2,
             s.centroid_lat, s.centroid_lon, s.commune, s.code_postal, s.departement,
             s.annee_rpg, s.siren, s.siret, s.nom_entreprise, s.dirigeant_nom,
             s.dirigeant_prenom, s.adresse_entreprise, s.distance_km, s.match_confiance,

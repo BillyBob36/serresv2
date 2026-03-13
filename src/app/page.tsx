@@ -339,14 +339,14 @@ export default function Home() {
                       <SortIcon col={key} />
                     </th>
                   ))}
-                  {/* Colonne Surface avec toggle HA/m² */}
+                  {/* Colonne Surface parcelle avec toggle HA/m² */}
                   <th
                     onClick={() => handleSort("surface_ha")}
                     className="px-4 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none"
-                    title="Superficie de la parcelle sous serre. Cliquez sur HA / m² pour changer l'unité d'affichage."
+                    title="Superficie de la parcelle agricole (RPG) déclarée par l'exploitant. Cliquez sur HA / m² pour changer l'unité."
                   >
                     <span className="flex items-center gap-1">
-                      Surface
+                      Surf. parcelle
                       <SortIcon col="surface_ha" />
                       <button
                         onClick={(e) => { e.stopPropagation(); setSurfaceUnit(surfaceUnit === "ha" ? "m2" : "ha"); }}
@@ -355,6 +355,16 @@ export default function Home() {
                       >
                         {surfaceUnit === "ha" ? "HA" : "m²"}
                       </button>
+                    </span>
+                  </th>
+                  {/* Colonne Surface serre (OSM) */}
+                  <th
+                    className="px-4 py-3 text-left font-medium text-gray-600"
+                    title="Surface réelle de la serre détectée via OpenStreetMap (contours du bâtiment). Calculée automatiquement à partir des polygones cartographiques."
+                  >
+                    <span className="flex items-center gap-1">
+                      Surf. serre
+                      <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded bg-emerald-100 text-emerald-700 font-medium">OSM</span>
                     </span>
                   </th>
                   <th
@@ -390,13 +400,13 @@ export default function Home() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={showBdnb ? 13 : 9} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={showBdnb ? 14 : 10} className="px-4 py-8 text-center text-gray-400">
                       Chargement...
                     </td>
                   </tr>
                 ) : data.length === 0 ? (
                   <tr>
-                    <td colSpan={showBdnb ? 13 : 9} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={showBdnb ? 14 : 10} className="px-4 py-8 text-center text-gray-400">
                       Aucun resultat
                     </td>
                   </tr>
@@ -446,6 +456,17 @@ export default function Home() {
                         {surfaceUnit === "ha"
                           ? `${Number(s.surface_ha).toFixed(2)} ha`
                           : `${Math.round(Number(s.surface_ha) * 10000).toLocaleString("fr-FR")} m²`}
+                      </td>
+                      <td className="px-4 py-3 text-gray-700 font-mono">
+                        {s.surface_osm_m2 ? (
+                          <span className="text-emerald-700 font-medium">
+                            {surfaceUnit === "ha"
+                              ? `${(Number(s.surface_osm_m2) / 10000).toFixed(2)} ha`
+                              : `${Math.round(Number(s.surface_osm_m2)).toLocaleString("fr-FR")} m²`}
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {s.match_confiance ? (

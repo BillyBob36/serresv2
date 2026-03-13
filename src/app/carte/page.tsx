@@ -5,9 +5,12 @@ import type { Serre } from "@/lib/types";
 import { CODE_CULTU_LABELS } from "@/lib/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
+const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const OSM_MIN_ZOOM = 13;
 
 // Leaflet dynamic import (avoid SSR)
 let L: typeof import("leaflet") | null = null;
+let osmtogeojson: ((data: unknown) => GeoJSON.FeatureCollection) | null = null;
 
 const CODE_COLORS: Record<string, string> = {
   CSS: "#9333ea",
@@ -15,34 +18,160 @@ const CODE_COLORS: Record<string, string> = {
   PEP: "#16a34a",
 };
 
+/** Calcul d'aire géodésique d'un polygone GeoJSON [lng, lat] en m² */
+function geodesicArea(coords: number[][]): number {
+  const toRad = Math.PI / 180;
+  const R = 6371000;
+  let area = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const j = (i + 1) % coords.length;
+    const k = (i + 2) % coords.length;
+    area += (coords[k][0] - coords[i][0]) * toRad * Math.sin(coords[j][1] * toRad);
+  }
+  return Math.abs(area * R * R / 2);
+}
+
+function buildOverpassQuery(south: number, west: number, north: number, east: number): string {
+  const bbox = `${south},${west},${north},${east}`;
+  return `[out:json][timeout:60];
+(
+  way["building"="greenhouse"](${bbox});
+  relation["building"="greenhouse"](${bbox});
+  way["building"="glasshouse"](${bbox});
+  relation["building"="glasshouse"](${bbox});
+  way["landuse"="greenhouse_horticulture"](${bbox});
+  relation["landuse"="greenhouse_horticulture"](${bbox});
+);
+out body;
+>;
+out skel qt;`;
+}
+
 export default function CartePage() {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersLayer = useRef<L.LayerGroup | null>(null);
+  const osmLayer = useRef<L.LayerGroup | null>(null);
   const [loading, setLoading] = useState(true);
+  const [osmLoading, setOsmLoading] = useState(false);
   const [count, setCount] = useState(0);
+  const [osmCount, setOsmCount] = useState(0);
   const [dept, setDept] = useState("");
   const [codeCultu, setCodeCultu] = useState("");
+  const [zoomLevel, setZoomLevel] = useState(6);
+  const [showRpg, setShowRpg] = useState(true);
+  const [showOsm, setShowOsm] = useState(true);
+  const lastOsmBbox = useRef("");
 
   const loadMap = useCallback(async () => {
     if (!mapRef.current) return;
 
-    // Dynamic import Leaflet
     if (!L) {
       L = await import("leaflet");
       await import("leaflet/dist/leaflet.css");
     }
+    if (!osmtogeojson) {
+      const mod = await import("osmtogeojson");
+      osmtogeojson = mod.default || mod;
+    }
 
-    // Créer la carte si elle n'existe pas
     if (!mapInstance.current) {
       mapInstance.current = L.map(mapRef.current).setView([46.5, 2.5], 6);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "&copy; OpenStreetMap",
-        maxZoom: 18,
+        maxZoom: 19,
       }).addTo(mapInstance.current);
       markersLayer.current = L.layerGroup().addTo(mapInstance.current);
+      osmLayer.current = L.layerGroup().addTo(mapInstance.current);
+
+      mapInstance.current.on("zoomend", () => {
+        setZoomLevel(mapInstance.current!.getZoom());
+      });
+      mapInstance.current.on("moveend", () => {
+        if (mapInstance.current!.getZoom() >= OSM_MIN_ZOOM) {
+          loadOsmPolygons();
+        }
+      });
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadOsmPolygons = useCallback(async () => {
+    if (!L || !osmLayer.current || !mapInstance.current || !osmtogeojson) return;
+    if (mapInstance.current.getZoom() < OSM_MIN_ZOOM) return;
+
+    const bounds = mapInstance.current.getBounds();
+    const bboxKey = `${bounds.getSouth().toFixed(3)},${bounds.getWest().toFixed(3)},${bounds.getNorth().toFixed(3)},${bounds.getEast().toFixed(3)}`;
+    if (bboxKey === lastOsmBbox.current) return;
+    lastOsmBbox.current = bboxKey;
+
+    setOsmLoading(true);
+    osmLayer.current.clearLayers();
+
+    try {
+      const query = buildOverpassQuery(
+        bounds.getSouth(), bounds.getWest(),
+        bounds.getNorth(), bounds.getEast()
+      );
+
+      const resp = await fetch(OVERPASS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `data=${encodeURIComponent(query)}`,
+      });
+
+      if (!resp.ok) throw new Error(`Overpass HTTP ${resp.status}`);
+      const json = await resp.json();
+      const geojson = osmtogeojson!(json);
+
+      let polyCount = 0;
+
+      L!.geoJSON(geojson, {
+        style: () => ({
+          color: "#059669",
+          weight: 2,
+          fillColor: "#10b981",
+          fillOpacity: 0.35,
+        }),
+        onEachFeature: (feature, layer) => {
+          if (!feature.geometry || feature.geometry.type === "Point") return;
+          polyCount++;
+
+          let areaM2 = 0;
+          if (feature.geometry.type === "Polygon" && feature.geometry.coordinates[0]) {
+            areaM2 = geodesicArea(feature.geometry.coordinates[0] as number[][]);
+          } else if (feature.geometry.type === "MultiPolygon") {
+            for (const poly of feature.geometry.coordinates) {
+              areaM2 += geodesicArea((poly as number[][][])[0]);
+            }
+          }
+
+          const tags = feature.properties || {};
+          const buildingType = tags.building || tags.landuse || "serre";
+          const name = tags.name || "";
+
+          const surfaceStr = areaM2 >= 10000
+            ? `${(areaM2 / 10000).toFixed(2)} ha (${Math.round(areaM2).toLocaleString("fr-FR")} m²)`
+            : `${Math.round(areaM2).toLocaleString("fr-FR")} m²`;
+
+          const popup = `
+            <div style="font-size:13px;line-height:1.6">
+              <strong style="color:#059669">⌂ Serre OSM</strong>${name ? ` — ${name}` : ""}<br/>
+              Type : ${buildingType}<br/>
+              <strong>Surface : ${surfaceStr}</strong><br/>
+              <span style="font-size:11px;color:#888">ID OSM : ${tags.id || feature.id || ""}</span>
+            </div>
+          `;
+          layer.bindPopup(popup);
+        },
+      }).addTo(osmLayer.current!);
+
+      setOsmCount(polyCount);
+    } catch (err) {
+      console.error("Erreur Overpass:", err);
+    } finally {
+      setOsmLoading(false);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadSerres = useCallback(async () => {
     if (!L || !markersLayer.current) return;
@@ -74,11 +203,16 @@ export default function CartePage() {
           }
         );
 
+        const osmSurface = s.surface_osm_m2
+          ? `Surf. serre OSM : <strong>${Math.round(Number(s.surface_osm_m2)).toLocaleString("fr-FR")} m²</strong><br/>`
+          : "";
+
         const popup = `
           <div style="font-size:13px;line-height:1.5">
             <strong>${s.commune || "Commune inconnue"}</strong> (${s.departement})<br/>
             <span style="color:${color};font-weight:bold">${s.code_cultu}</span> — ${CODE_CULTU_LABELS[s.code_cultu] || ""}<br/>
-            Surface : <strong>${Number(s.surface_ha).toFixed(2)} ha</strong><br/>
+            Surf. parcelle : <strong>${Number(s.surface_ha).toFixed(2)} ha</strong><br/>
+            ${osmSurface}
             ${s.nom_entreprise ? `Entreprise : <strong>${s.nom_entreprise}</strong><br/>` : ""}
             ${s.dirigeant_prenom || s.dirigeant_nom ? `Dirigeant : ${s.dirigeant_prenom || ""} ${s.dirigeant_nom || ""}<br/>` : ""}
             ${s.match_confiance ? `Confiance : ${s.match_confiance} (${Number(s.distance_km).toFixed(1)} km)<br/>` : ""}
@@ -98,7 +232,6 @@ export default function CartePage() {
 
   useEffect(() => {
     loadMap().then(loadSerres);
-    // cleanup
     return () => {
       if (mapInstance.current) {
         mapInstance.current.remove();
@@ -108,10 +241,20 @@ export default function CartePage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (mapInstance.current) {
-      loadSerres();
-    }
+    if (mapInstance.current) loadSerres();
   }, [dept, codeCultu, loadSerres]);
+
+  useEffect(() => {
+    if (!markersLayer.current || !mapInstance.current) return;
+    if (showRpg) markersLayer.current.addTo(mapInstance.current);
+    else markersLayer.current.remove();
+  }, [showRpg]);
+
+  useEffect(() => {
+    if (!osmLayer.current || !mapInstance.current) return;
+    if (showOsm) osmLayer.current.addTo(mapInstance.current);
+    else osmLayer.current.remove();
+  }, [showOsm]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -124,7 +267,9 @@ export default function CartePage() {
             <p className="text-sm text-gray-500">
               {loading
                 ? "Chargement..."
-                : `${count.toLocaleString("fr-FR")} serres (200 affichees max)`}
+                : `${count.toLocaleString("fr-FR")} serres RPG (200 max)`}
+              {osmLoading && " | Chargement polygones OSM..."}
+              {!osmLoading && osmCount > 0 && ` | ${osmCount} polygones OSM`}
             </p>
           </div>
           <div className="flex gap-3 items-end">
@@ -171,21 +316,37 @@ export default function CartePage() {
         </div>
       </header>
 
-      {/* Légende */}
+      {/* Légende + contrôles couches */}
       <div className="absolute top-24 right-8 z-[1000] bg-white rounded-lg shadow-lg p-3 border border-gray-200">
-        <p className="text-xs font-medium text-gray-500 mb-2">Legende</p>
+        <p className="text-xs font-medium text-gray-500 mb-2">Couches</p>
+        <label className="flex items-center gap-2 mb-1 cursor-pointer">
+          <input type="checkbox" checked={showRpg} onChange={() => setShowRpg(!showRpg)} className="rounded" />
+          <span className="text-xs text-gray-700 font-medium">Points RPG</span>
+        </label>
         {Object.entries(CODE_COLORS).map(([code, color]) => (
-          <div key={code} className="flex items-center gap-2 mb-1">
-            <span
-              className="w-3 h-3 rounded-full inline-block"
-              style={{ backgroundColor: color }}
-            />
-            <span className="text-xs text-gray-700">
-              {code} — {CODE_CULTU_LABELS[code]}
-            </span>
+          <div key={code} className="flex items-center gap-2 mb-1 ml-4">
+            <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: color }} />
+            <span className="text-xs text-gray-600">{code} — {CODE_CULTU_LABELS[code]}</span>
           </div>
         ))}
+        <label className="flex items-center gap-2 mt-2 mb-1 cursor-pointer">
+          <input type="checkbox" checked={showOsm} onChange={() => setShowOsm(!showOsm)} className="rounded" />
+          <span className="text-xs text-gray-700 font-medium">Polygones OSM</span>
+        </label>
+        <div className="flex items-center gap-2 ml-4">
+          <span className="w-3 h-3 rounded inline-block" style={{ backgroundColor: "#10b981", opacity: 0.6 }} />
+          <span className="text-xs text-gray-600">Serres (contours)</span>
+        </div>
       </div>
+
+      {/* Message zoom insuffisant */}
+      {zoomLevel < OSM_MIN_ZOOM && showOsm && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[1000] bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 shadow-lg">
+          <p className="text-xs text-amber-700 font-medium">
+            Zoomez au niveau {OSM_MIN_ZOOM}+ pour voir les contours OSM des serres (zoom actuel : {zoomLevel})
+          </p>
+        </div>
+      )}
 
       {/* Carte */}
       <div

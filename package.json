@@ -12,12 +12,14 @@
     "match": "npx tsx scripts/match-serres.ts",
     "pipeline": "npx tsx scripts/import-rpg.ts && npx tsx scripts/import-entreprises.ts && npx tsx scripts/match-serres.ts",
     "import:bdnb": "npx tsx scripts/import-bdnb.ts",
-    "import:bdnb:test": "npx tsx scripts/import-bdnb.ts --dept 84"
+    "import:bdnb:test": "npx tsx scripts/import-bdnb.ts --dept 84",
+    "scan:osm": "npx tsx scripts/scan-osm-serres.ts"
   },
   "dependencies": {
     "dotenv": "^17.3.1",
     "leaflet": "^1.9.4",
     "next": "16.1.6",
+    "osmtogeojson": "^3.0.0-beta.5",
     "postgres": "^3.4.8",
     "react": "19.2.3",
     "react-dom": "19.2.3"

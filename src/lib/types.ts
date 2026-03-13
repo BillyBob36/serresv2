@@ -4,6 +4,7 @@ export interface Serre {
   code_cultu: string;
   code_group: string | null;
   surface_ha: number;
+  surface_osm_m2: number | null;
   centroid_lat: number;
   centroid_lon: number;
   commune: string | null;
