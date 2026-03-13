@@ -26,7 +26,6 @@ const sql = postgres(
 
 const OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
 let overpassIdx = 0;
@@ -148,7 +147,7 @@ async function queryOverpass(query: string, retries = 5): Promise<OsmElement[]> 
     const url = nextOverpassUrl();
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
+      const timeout = setTimeout(() => controller.abort(), 45000);
 
       const resp = await fetch(url, {
         method: "POST",
