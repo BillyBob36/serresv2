@@ -112,13 +112,19 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Si aucune source n'a retourné de données, ne pas sauvegarder et retourner une erreur
+  if (!source) {
+    console.error(`Enrichissement echoue pour siren=${siren}: aucune donnee recuperee (Pappers key: ${PAPPERS_API_KEY ? "present" : "MANQUANTE"}, Google key: ${GOOGLE_PLACES_API_KEY ? "present" : "MANQUANTE"})`);
+    return NextResponse.json({ error: "Aucune donnee recuperee. Verifiez les cles API et les credits.", data: null }, { status: 422 });
+  }
+
   // Insérer en BDD
   const record = {
     siren,
     ...pappersData,
     ...googleData,
     enrichi_par: userId,
-    source: source || "none",
+    source,
   };
 
   await sql`

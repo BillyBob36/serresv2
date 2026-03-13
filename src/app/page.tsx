@@ -24,6 +24,7 @@ export default function Home() {
   const [sortBy, setSortBy] = useState("surface_ha");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [showBdnb, setShowBdnb] = useState(false);
+  const [showDatas, setShowDatas] = useState(false);
   const [surfaceUnit, setSurfaceUnit] = useState<"ha" | "m2">("ha");
   const [expandedSerres, setExpandedSerres] = useState<Set<number>>(new Set());
   const [statutFilter, setStatutFilter] = useState("");
@@ -154,6 +155,10 @@ export default function Home() {
         body: JSON.stringify({ siren, nom_entreprise: nom, lat, lon }),
       });
       const json = await resp.json();
+      if (!resp.ok) {
+        alert(json.error || "Erreur lors de l'enrichissement");
+        return;
+      }
       if (json.data) {
         setEnrichCache((prev) => ({ ...prev, [siren]: json.data }));
       }
@@ -487,14 +492,20 @@ export default function Home() {
                     Prospect <SortIcon col="nom_entreprise" />
                   </th>
                   <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Dirigeant</th>
-                  <th className="px-3 py-3 text-center font-medium text-orange-600 bg-orange-50/30 whitespace-nowrap w-16">Enrichir</th>
-                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Telephone</th>
-                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Site web</th>
-                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Google</th>
-                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Forme jur.</th>
-                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">NAF</th>
-                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Effectifs</th>
-                  <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">CA</th>
+                  <th onClick={() => setShowDatas(!showDatas)} className="px-3 py-3 text-left font-medium text-orange-600 cursor-pointer hover:text-orange-800 select-none border-l border-gray-200 bg-orange-50/50 whitespace-nowrap" title="Donnees enrichies (Pappers + Google). Cliquez pour deplier.">
+                    {showDatas ? "\u25BC" : "\u25B6"} Datas
+                  </th>
+                  {showDatas && (
+                    <>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Telephone</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Site web</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Google</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Forme jur.</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">NAF</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">Effectifs</th>
+                      <th className="px-3 py-3 text-left font-medium text-orange-500 text-xs bg-orange-50/20 whitespace-nowrap">CA</th>
+                    </>
+                  )}
                   <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Statut</th>
                   <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Match</th>
                   <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Notes</th>
@@ -578,7 +589,7 @@ export default function Home() {
                           <td className="px-3 py-2 text-xs text-gray-600 bg-blue-50/10">
                             {m ? (`${m.dirigeant_prenom || ""} ${m.dirigeant_nom || ""}`.trim() || "\u2014") : "\u2014"}
                           </td>
-                          <td className="px-3 py-2 text-center bg-orange-50/10">
+                          <td className="px-3 py-2 border-l border-gray-200 bg-orange-50/10">
                             {m?.siren ? (
                               <button
                                 onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon))}
@@ -590,13 +601,17 @@ export default function Home() {
                               </button>
                             ) : <span className="text-gray-300">{"\u2014"}</span>}
                           </td>
-                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.telephone ? <a href={`tel:${e.telephone}`} className="text-blue-600 hover:underline">{e.telephone}</a> : <span className="text-gray-300">{"\u2014"}</span>}</td>
-                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10 max-w-[120px] truncate">{e?.site_web ? <a href={e.site_web} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{e.site_web.replace(/^https?:\/\//, "")}</a> : <span className="text-gray-300">{"\u2014"}</span>}</td>
-                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.note_google ? <span>{e.note_google}/5 <span className="text-gray-400">({e.avis_count})</span></span> : <span className="text-gray-300">{"\u2014"}</span>}</td>
-                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.forme_juridique || <span className="text-gray-300">{"\u2014"}</span>}</td>
-                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10" title={e?.libelle_naf || ""}>{e?.code_naf || <span className="text-gray-300">{"\u2014"}</span>}</td>
-                          <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.tranche_effectifs || <span className="text-gray-300">{"\u2014"}</span>}</td>
-                          <td className="px-3 py-2 text-xs text-gray-600 font-mono bg-orange-50/10">{e?.chiffre_affaires ? `${Number(e.chiffre_affaires).toLocaleString("fr-FR")} \u20AC` : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                          {showDatas && (
+                            <>
+                              <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.telephone ? <a href={`tel:${e.telephone}`} className="text-blue-600 hover:underline">{e.telephone}</a> : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                              <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10 max-w-[120px] truncate">{e?.site_web ? <a href={e.site_web} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{e.site_web.replace(/^https?:\/\//, "")}</a> : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                              <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.note_google ? <span>{e.note_google}/5 <span className="text-gray-400">({e.avis_count})</span></span> : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                              <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.forme_juridique || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                              <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10" title={e?.libelle_naf || ""}>{e?.code_naf || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                              <td className="px-3 py-2 text-xs text-gray-600 bg-orange-50/10">{e?.tranche_effectifs || <span className="text-gray-300">{"\u2014"}</span>}</td>
+                              <td className="px-3 py-2 text-xs text-gray-600 font-mono bg-orange-50/10">{e?.chiffre_affaires ? `${Number(e.chiffre_affaires).toLocaleString("fr-FR")} \u20AC` : <span className="text-gray-300">{"\u2014"}</span>}</td>
+                            </>
+                          )}
                           <td className="px-3 py-2 bg-blue-50/10">
                             <select
                               value={prospections[s.id]?.statut || "nouveau"}
