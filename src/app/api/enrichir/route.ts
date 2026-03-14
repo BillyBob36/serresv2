@@ -35,6 +35,9 @@ export async function POST(request: NextRequest) {
   let googleData: any = {};
   let source = "";
 
+  let pappersError = "";
+  let googleError = "";
+
   // --- Pappers ---
   if (PAPPERS_API_KEY) {
     try {
@@ -64,58 +67,81 @@ export async function POST(request: NextRequest) {
             : null,
         };
         source = "pappers";
+      } else {
+        const errBody = await resp.text().catch(() => "");
+        pappersError = `HTTP ${resp.status}: ${errBody.slice(0, 200)}`;
+        console.error(`Pappers ${resp.status} pour siren=${siren}: ${errBody.slice(0, 300)}`);
       }
     } catch (err) {
+      pappersError = String(err);
       console.error("Pappers error:", err);
     }
+  } else {
+    pappersError = "Cle API manquante";
   }
 
-  // --- Google Places ---
+  // --- Google Places (New API v1) ---
   if (GOOGLE_PLACES_API_KEY && nom_entreprise) {
     try {
-      const searchQuery = encodeURIComponent(nom_entreprise);
-      const locationBias = lat && lon ? `&locationbias=circle:5000@${lat},${lon}` : "";
+      const searchBody: any = { textQuery: nom_entreprise };
+      if (lat && lon) {
+        searchBody.locationBias = { circle: { center: { latitude: lat, longitude: lon }, radius: 5000.0 } };
+      }
 
-      // Find Place
+      // Text Search (New)
       const findResp = await fetch(
-        `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${searchQuery}&inputtype=textquery&fields=place_id${locationBias}&key=${GOOGLE_PLACES_API_KEY}`,
-        { signal: AbortSignal.timeout(10000) }
+        "https://places.googleapis.com/v1/places:searchText",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": "places.id,places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.regularOpeningHours",
+          },
+          body: JSON.stringify(searchBody),
+          signal: AbortSignal.timeout(10000),
+        }
       );
 
       if (findResp.ok) {
         const findJson = await findResp.json();
-        const placeId = findJson.candidates?.[0]?.place_id;
+        const place = findJson.places?.[0];
 
-        if (placeId) {
-          // Place Details
-          const detailResp = await fetch(
-            `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=formatted_phone_number,website,rating,user_ratings_total,opening_hours&key=${GOOGLE_PLACES_API_KEY}`,
-            { signal: AbortSignal.timeout(10000) }
-          );
-
-          if (detailResp.ok) {
-            const detail = (await detailResp.json()).result || {};
-            googleData = {
-              telephone: detail.formatted_phone_number || null,
-              site_web: detail.website || null,
-              note_google: detail.rating || null,
-              avis_count: detail.user_ratings_total || null,
-              horaires: detail.opening_hours?.weekday_text?.join(" | ") || null,
-              google_place_id: placeId,
-            };
-            source = source ? "both" : "google";
-          }
+        if (place) {
+          googleData = {
+            telephone: place.internationalPhoneNumber || place.nationalPhoneNumber || null,
+            site_web: place.websiteUri || null,
+            note_google: place.rating || null,
+            avis_count: place.userRatingCount || null,
+            horaires: place.regularOpeningHours?.weekdayDescriptions?.join(" | ") || null,
+            google_place_id: place.id || null,
+          };
+          source = source ? "both" : "google";
+          console.log(`Google Places OK pour "${nom_entreprise}": place=${place.displayName?.text || place.id}`);
+        } else {
+          googleError = "Aucun resultat trouve";
+          console.log(`Google Places: aucun resultat pour "${nom_entreprise}"`);
         }
+      } else {
+        const errBody = await findResp.text().catch(() => "");
+        googleError = `HTTP ${findResp.status}: ${errBody.slice(0, 200)}`;
+        console.error(`Google Places ${findResp.status} pour "${nom_entreprise}": ${errBody.slice(0, 300)}`);
       }
     } catch (err) {
+      googleError = String(err);
       console.error("Google Places error:", err);
     }
+  } else if (!GOOGLE_PLACES_API_KEY) {
+    googleError = "Cle API manquante";
+  } else {
+    googleError = "Pas de nom entreprise";
   }
 
   // Si aucune source n'a retourné de données, ne pas sauvegarder et retourner une erreur
   if (!source) {
-    console.error(`Enrichissement echoue pour siren=${siren}: aucune donnee recuperee (Pappers key: ${PAPPERS_API_KEY ? "present" : "MANQUANTE"}, Google key: ${GOOGLE_PLACES_API_KEY ? "present" : "MANQUANTE"})`);
-    return NextResponse.json({ error: "Aucune donnee recuperee. Verifiez les cles API et les credits.", data: null }, { status: 422 });
+    const details = [`Pappers: ${pappersError || "echec"}`, `Google: ${googleError || "echec"}`].join(" | ");
+    console.error(`Enrichissement echoue siren=${siren}: ${details}`);
+    return NextResponse.json({ error: `Enrichissement echoue. ${details}`, data: null }, { status: 422 });
   }
 
   // Insérer en BDD
