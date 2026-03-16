@@ -105,12 +105,16 @@ function formatUsageMessage(apiName: string, appels: number, limite: number): st
 // =============================================
 // SOURCES DE DONNEES (par ordre de priorite)
 //
-// 1. API Gouv (GRATUIT, ILLIMITE) → forme juridique, NAF, effectifs,
-//    adresse, dirigeants, date creation, CA, resultat net
+// 1. API Gouv (GRATUIT, ILLIMITE) → identite complete, NAF, effectifs,
+//    adresse, dirigeants complets, date creation, CA, resultat net,
+//    complements (bio, ESS, RGE...), finances historique
 // 2. Pappers (PAYANT) → CA + resultat net UNIQUEMENT si l'API Gouv
 //    ne les a pas retournes
 // 3. Google Places (PAYANT, 4800/mois gratuit) → telephone, site web,
-//    note Google, horaires, avis
+//    note Google, horaires, avis, businessStatus, adresse Google,
+//    lien Maps, types
+// 4. BODACC (GRATUIT, ILLIMITE) → procedures collectives, depots
+//    comptes, modifications
 // =============================================
 
 export async function POST(request: NextRequest) {
@@ -143,15 +147,18 @@ export async function POST(request: NextRequest) {
   let gouvData: any = {};
   let pappersData: any = {};
   let googleData: any = {};
+  let bodaccData: any = {};
   const sources: string[] = [];
 
   let gouvError = "";
   let pappersError = "";
   let googleError = "";
+  let bodaccError = "";
 
   // ======================================================
   // ETAPE 1 : API Gouvernement (GRATUIT, ILLIMITE)
   // https://recherche-entreprises.api.gouv.fr
+  // Recuperation de TOUS les champs disponibles
   // ======================================================
   try {
     const resp = await fetch(
@@ -171,9 +178,10 @@ export async function POST(request: NextRequest) {
         const codeTE = entreprise.tranche_effectif_salarie || entreprise.siege?.tranche_effectif_salarie;
         const trancheEffectifs = TRANCHES_EFFECTIFS[codeTE] || (codeTE ? `Code ${codeTE}` : null);
 
-        // Finances : prendre l'annee la plus recente
+        // Finances : prendre l'annee la plus recente + historique complet
         let chiffreAffaires: number | null = null;
         let resultatNet: number | null = null;
+        let financesHistorique: any = null;
         if (entreprise.finances) {
           const annees = Object.keys(entreprise.finances).sort().reverse();
           if (annees.length > 0) {
@@ -181,9 +189,13 @@ export async function POST(request: NextRequest) {
             chiffreAffaires = dernier.ca ?? null;
             resultatNet = dernier.resultat_net ?? null;
           }
+          financesHistorique = entreprise.finances;
         }
 
-        // Dirigeants
+        // Dirigeants complets (toutes les personnes, physiques ET morales)
+        const dirigeantsComplet = entreprise.dirigeants || null;
+
+        // Dirigeants simplifies (personnes physiques uniquement, pour compat)
         const dirigeants = entreprise.dirigeants
           ?.filter((d: any) => d.type_dirigeant === "personne physique")
           ?.map((d: any) => ({
@@ -193,9 +205,14 @@ export async function POST(request: NextRequest) {
           })) || null;
 
         // Adresse
-        const adresse = entreprise.siege?.geo_adresse || entreprise.siege?.adresse || null;
+        const siege = entreprise.siege || {};
+        const adresse = siege.geo_adresse || siege.adresse || null;
+
+        // Complements
+        const complements = entreprise.complements || null;
 
         gouvData = {
+          // Champs existants
           forme_juridique: formeJuridique,
           date_creation: entreprise.date_creation || null,
           tranche_effectifs: trancheEffectifs,
@@ -203,11 +220,43 @@ export async function POST(request: NextRequest) {
           resultat_net: resultatNet,
           adresse_siege: adresse,
           code_naf: entreprise.activite_principale || null,
-          libelle_naf: null, // l'API gouv ne retourne pas le libelle NAF
+          libelle_naf: null,
           dirigeants,
+          // Nouveaux champs identite
+          etat_administratif: entreprise.etat_administratif || null,
+          date_fermeture: entreprise.date_fermeture || null,
+          nom_complet: entreprise.nom_complet || null,
+          nom_raison_sociale: entreprise.nom_raison_sociale || null,
+          sigle: entreprise.sigle || null,
+          categorie_entreprise: entreprise.categorie_entreprise || null,
+          caractere_employeur: siege.caractere_employeur === "O",
+          nombre_etablissements: entreprise.nombre_etablissements || null,
+          nombre_etablissements_ouverts: entreprise.nombre_etablissements_ouverts || null,
+          section_activite_principale: entreprise.section_activite_principale || null,
+          activite_principale_naf25: entreprise.activite_principale_naf25 || null,
+          annee_tranche_effectif: entreprise.annee_tranche_effectif_salarie || null,
+          // Siege
+          siret_siege: siege.siret || null,
+          code_postal_siege: siege.code_postal || null,
+          libelle_commune_siege: siege.libelle_commune || null,
+          latitude_siege: siege.latitude || null,
+          longitude_siege: siege.longitude || null,
+          // Complements
+          est_bio: complements?.est_bio || false,
+          est_entrepreneur_individuel: complements?.est_entrepreneur_individuel || false,
+          est_ess: complements?.est_ess || false,
+          est_rge: complements?.est_rge || false,
+          est_societe_mission: complements?.est_societe_mission || false,
+          convention_collective_renseignee: complements?.convention_collective_renseignee || false,
+          liste_idcc: complements?.liste_idcc || null,
+          complements,
+          // Dirigeants complets
+          dirigeants_complet: dirigeantsComplet,
+          // Finances historique
+          finances_historique: financesHistorique,
         };
         sources.push("gouv");
-        console.log(`[GOUV] OK siren=${siren}: ${entreprise.nom_complet}, CA=${chiffreAffaires}, forme=${formeJuridique}`);
+        console.log(`[GOUV] OK siren=${siren}: ${entreprise.nom_complet}, etat=${entreprise.etat_administratif}, CA=${chiffreAffaires}`);
       } else {
         gouvError = "SIREN non trouve dans API gouv";
         console.log(`[GOUV] Aucun resultat exact pour siren=${siren}`);
@@ -269,6 +318,8 @@ export async function POST(request: NextRequest) {
   // ======================================================
   // ETAPE 3 : Google Places (PAYANT, 4800/mois gratuit)
   // Telephone, site web, note Google, horaires, avis
+  // + businessStatus, formattedAddress, googleMapsUri, types
+  // (inclus sans surcout dans le tier Enterprise)
   // ======================================================
   if (GOOGLE_PLACES_API_KEY && nom_entreprise) {
     const googleUsage = await getApiUsage("google_places");
@@ -289,7 +340,22 @@ export async function POST(request: NextRequest) {
             headers: {
               "Content-Type": "application/json",
               "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-              "X-Goog-FieldMask": "places.id,places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.regularOpeningHours",
+              "X-Goog-FieldMask": [
+                "places.id",
+                "places.displayName",
+                "places.nationalPhoneNumber",
+                "places.internationalPhoneNumber",
+                "places.websiteUri",
+                "places.rating",
+                "places.userRatingCount",
+                "places.regularOpeningHours",
+                "places.businessStatus",
+                "places.formattedAddress",
+                "places.googleMapsUri",
+                "places.types",
+                "places.primaryType",
+                "places.primaryTypeDisplayName",
+              ].join(","),
             },
             body: JSON.stringify(searchBody),
             signal: AbortSignal.timeout(10000),
@@ -309,9 +375,14 @@ export async function POST(request: NextRequest) {
               avis_count: place.userRatingCount || null,
               horaires: place.regularOpeningHours?.weekdayDescriptions?.join(" | ") || null,
               google_place_id: place.id || null,
+              google_business_status: place.businessStatus || null,
+              google_formatted_address: place.formattedAddress || null,
+              google_maps_uri: place.googleMapsUri || null,
+              google_types: place.types || null,
+              google_primary_type: place.primaryTypeDisplayName?.text || place.primaryType || null,
             };
             sources.push("google");
-            console.log(`[GOOGLE] OK pour "${nom_entreprise}": ${place.displayName?.text || place.id}`);
+            console.log(`[GOOGLE] OK pour "${nom_entreprise}": ${place.displayName?.text}, status=${place.businessStatus}, types=${place.types?.join(",")}`);
           } else {
             googleError = "Aucun resultat trouve";
           }
@@ -336,6 +407,74 @@ export async function POST(request: NextRequest) {
   }
 
   // ======================================================
+  // ETAPE 4 : BODACC (GRATUIT, ILLIMITE)
+  // Procedures collectives, depots de comptes, modifications
+  // ======================================================
+  try {
+    const sirenFormatted = siren.replace(/\s/g, "");
+    const bodaccResp = await fetch(
+      `https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/annonces-commerciales/records?where=registre%3D%22${sirenFormatted}%22&order_by=dateparution%20desc&limit=20`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (bodaccResp.ok) {
+      const bodaccJson = await bodaccResp.json();
+      const annonces = bodaccJson.results || [];
+
+      if (annonces.length > 0) {
+        const procedures = annonces
+          .filter((a: any) => a.familleavis === "collective" || a.jugement)
+          .map((a: any) => ({
+            date: a.dateparution,
+            type: a.familleavis_lib || a.typeavis_lib,
+            tribunal: a.tribunal,
+            jugement: a.jugement ? JSON.parse(a.jugement) : null,
+          }));
+
+        const depots = annonces
+          .filter((a: any) => a.familleavis === "dpc")
+          .map((a: any) => {
+            let depot = null;
+            try { depot = a.depot ? JSON.parse(a.depot) : null; } catch {}
+            return {
+              date: a.dateparution,
+              type: a.familleavis_lib,
+              date_cloture: depot?.dateCloture || null,
+              type_depot: depot?.typeDepot || null,
+            };
+          });
+
+        const modifications = annonces
+          .filter((a: any) => a.familleavis === "modification" || a.modificationsgenerales)
+          .slice(0, 5)
+          .map((a: any) => ({
+            date: a.dateparution,
+            type: a.familleavis_lib || a.typeavis_lib,
+            details: a.modificationsgenerales || null,
+          }));
+
+        bodaccData = {
+          bodacc_procedures: procedures.length > 0 ? procedures : null,
+          bodacc_depots_comptes: depots.length > 0 ? depots : null,
+          bodacc_derniere_modification: modifications.length > 0 ? modifications : null,
+        };
+
+        if (procedures.length > 0 || depots.length > 0 || modifications.length > 0) {
+          sources.push("bodacc");
+        }
+        console.log(`[BODACC] OK siren=${siren}: ${annonces.length} annonces, ${procedures.length} proc., ${depots.length} depots`);
+      } else {
+        console.log(`[BODACC] Aucune annonce pour siren=${siren}`);
+      }
+    } else {
+      bodaccError = `HTTP ${bodaccResp.status}`;
+      console.error(`[BODACC] Erreur ${bodaccResp.status} pour siren=${siren}`);
+    }
+  } catch (err) {
+    bodaccError = String(err);
+    console.error("[BODACC] Erreur:", err);
+  }
+
+  // ======================================================
   // Resultat : fusionner les sources (gouv prioritaire)
   // ======================================================
   if (sources.length === 0) {
@@ -343,6 +482,7 @@ export async function POST(request: NextRequest) {
       `Gouv: ${gouvError || "echec"}`,
       `Pappers: ${pappersError || "non appele"}`,
       `Google: ${googleError || "echec"}`,
+      `BODACC: ${bodaccError || "aucune donnee"}`,
     ].join(" | ");
     const isQuotaError = pappersError.includes("Quota") || googleError.includes("Quota");
     console.error(`Enrichissement echoue siren=${siren}: ${details}`);
@@ -352,9 +492,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Fusion : gouvData est la base, Pappers complete le CA, Google ajoute contact
-  const record = {
+  // Fusion : gouvData est la base, Pappers complete le CA, Google ajoute contact, BODACC ajoute juridique
+  const record: any = {
     siren,
+    // Champs existants
     forme_juridique: gouvData.forme_juridique || null,
     date_creation: gouvData.date_creation || null,
     tranche_effectifs: gouvData.tranche_effectifs || null,
@@ -372,7 +513,48 @@ export async function POST(request: NextRequest) {
     avis_count: googleData.avis_count || null,
     google_place_id: googleData.google_place_id || null,
     enrichi_par: userId,
-    source: sources.join("+"),  // ex: "gouv+google", "gouv+pappers+google"
+    source: sources.join("+"),
+    // Nouveaux champs identite (API Gouv)
+    etat_administratif: gouvData.etat_administratif || null,
+    date_fermeture: gouvData.date_fermeture || null,
+    nom_complet: gouvData.nom_complet || null,
+    nom_raison_sociale: gouvData.nom_raison_sociale || null,
+    sigle: gouvData.sigle || null,
+    siret_siege: gouvData.siret_siege || null,
+    code_postal_siege: gouvData.code_postal_siege || null,
+    libelle_commune_siege: gouvData.libelle_commune_siege || null,
+    latitude_siege: gouvData.latitude_siege || null,
+    longitude_siege: gouvData.longitude_siege || null,
+    categorie_entreprise: gouvData.categorie_entreprise || null,
+    caractere_employeur: gouvData.caractere_employeur || false,
+    nombre_etablissements: gouvData.nombre_etablissements || null,
+    nombre_etablissements_ouverts: gouvData.nombre_etablissements_ouverts || null,
+    section_activite_principale: gouvData.section_activite_principale || null,
+    activite_principale_naf25: gouvData.activite_principale_naf25 || null,
+    annee_tranche_effectif: gouvData.annee_tranche_effectif || null,
+    // Complements
+    est_bio: gouvData.est_bio || false,
+    est_entrepreneur_individuel: gouvData.est_entrepreneur_individuel || false,
+    est_ess: gouvData.est_ess || false,
+    est_rge: gouvData.est_rge || false,
+    est_societe_mission: gouvData.est_societe_mission || false,
+    convention_collective_renseignee: gouvData.convention_collective_renseignee || false,
+    liste_idcc: gouvData.liste_idcc || null,
+    complements: gouvData.complements || null,
+    // Dirigeants complets
+    dirigeants_complet: gouvData.dirigeants_complet || null,
+    // Finances historique
+    finances_historique: gouvData.finances_historique || null,
+    // Google Places extra
+    google_business_status: googleData.google_business_status || null,
+    google_formatted_address: googleData.google_formatted_address || null,
+    google_maps_uri: googleData.google_maps_uri || null,
+    google_types: googleData.google_types || null,
+    google_primary_type: googleData.google_primary_type || null,
+    // BODACC
+    bodacc_procedures: bodaccData.bodacc_procedures || null,
+    bodacc_depots_comptes: bodaccData.bodacc_depots_comptes || null,
+    bodacc_derniere_modification: bodaccData.bodacc_derniere_modification || null,
   };
 
   await sql`
@@ -380,27 +562,38 @@ export async function POST(request: NextRequest) {
       siren, forme_juridique, date_creation, tranche_effectifs,
       chiffre_affaires, resultat_net, adresse_siege, code_naf, libelle_naf,
       dirigeants, telephone, site_web, email, note_google, horaires, avis_count,
-      google_place_id, enrichi_par, source
+      google_place_id, enrichi_par, source,
+      etat_administratif, date_fermeture, nom_complet, nom_raison_sociale, sigle,
+      siret_siege, code_postal_siege, libelle_commune_siege, latitude_siege, longitude_siege,
+      categorie_entreprise, caractere_employeur, nombre_etablissements, nombre_etablissements_ouverts,
+      section_activite_principale, activite_principale_naf25, annee_tranche_effectif,
+      est_bio, est_entrepreneur_individuel, est_ess, est_rge, est_societe_mission,
+      convention_collective_renseignee, liste_idcc, complements,
+      dirigeants_complet, finances_historique,
+      google_business_status, google_formatted_address, google_maps_uri, google_types, google_primary_type,
+      bodacc_procedures, bodacc_depots_comptes, bodacc_derniere_modification
     ) VALUES (
-      ${record.siren},
-      ${record.forme_juridique},
-      ${record.date_creation},
-      ${record.tranche_effectifs},
-      ${record.chiffre_affaires},
-      ${record.resultat_net},
-      ${record.adresse_siege},
-      ${record.code_naf},
-      ${record.libelle_naf},
+      ${record.siren}, ${record.forme_juridique}, ${record.date_creation}, ${record.tranche_effectifs},
+      ${record.chiffre_affaires}, ${record.resultat_net}, ${record.adresse_siege}, ${record.code_naf}, ${record.libelle_naf},
       ${record.dirigeants ? JSON.stringify(record.dirigeants) : null},
-      ${record.telephone},
-      ${record.site_web},
-      ${record.email},
-      ${record.note_google},
-      ${record.horaires},
-      ${record.avis_count},
-      ${record.google_place_id},
-      ${record.enrichi_par},
-      ${record.source}
+      ${record.telephone}, ${record.site_web}, ${record.email}, ${record.note_google}, ${record.horaires}, ${record.avis_count},
+      ${record.google_place_id}, ${record.enrichi_par}, ${record.source},
+      ${record.etat_administratif}, ${record.date_fermeture}, ${record.nom_complet}, ${record.nom_raison_sociale}, ${record.sigle},
+      ${record.siret_siege}, ${record.code_postal_siege}, ${record.libelle_commune_siege}, ${record.latitude_siege}, ${record.longitude_siege},
+      ${record.categorie_entreprise}, ${record.caractere_employeur}, ${record.nombre_etablissements}, ${record.nombre_etablissements_ouverts},
+      ${record.section_activite_principale}, ${record.activite_principale_naf25}, ${record.annee_tranche_effectif},
+      ${record.est_bio}, ${record.est_entrepreneur_individuel}, ${record.est_ess}, ${record.est_rge}, ${record.est_societe_mission},
+      ${record.convention_collective_renseignee},
+      ${record.liste_idcc ? JSON.stringify(record.liste_idcc) : null},
+      ${record.complements ? JSON.stringify(record.complements) : null},
+      ${record.dirigeants_complet ? JSON.stringify(record.dirigeants_complet) : null},
+      ${record.finances_historique ? JSON.stringify(record.finances_historique) : null},
+      ${record.google_business_status}, ${record.google_formatted_address}, ${record.google_maps_uri},
+      ${record.google_types ? JSON.stringify(record.google_types) : null},
+      ${record.google_primary_type},
+      ${record.bodacc_procedures ? JSON.stringify(record.bodacc_procedures) : null},
+      ${record.bodacc_depots_comptes ? JSON.stringify(record.bodacc_depots_comptes) : null},
+      ${record.bodacc_derniere_modification ? JSON.stringify(record.bodacc_derniere_modification) : null}
     )
     ON CONFLICT (siren) DO UPDATE SET
       forme_juridique = EXCLUDED.forme_juridique,
@@ -420,7 +613,42 @@ export async function POST(request: NextRequest) {
       google_place_id = EXCLUDED.google_place_id,
       enrichi_par = EXCLUDED.enrichi_par,
       enrichi_at = NOW(),
-      source = EXCLUDED.source
+      source = EXCLUDED.source,
+      etat_administratif = EXCLUDED.etat_administratif,
+      date_fermeture = EXCLUDED.date_fermeture,
+      nom_complet = EXCLUDED.nom_complet,
+      nom_raison_sociale = EXCLUDED.nom_raison_sociale,
+      sigle = EXCLUDED.sigle,
+      siret_siege = EXCLUDED.siret_siege,
+      code_postal_siege = EXCLUDED.code_postal_siege,
+      libelle_commune_siege = EXCLUDED.libelle_commune_siege,
+      latitude_siege = EXCLUDED.latitude_siege,
+      longitude_siege = EXCLUDED.longitude_siege,
+      categorie_entreprise = EXCLUDED.categorie_entreprise,
+      caractere_employeur = EXCLUDED.caractere_employeur,
+      nombre_etablissements = EXCLUDED.nombre_etablissements,
+      nombre_etablissements_ouverts = EXCLUDED.nombre_etablissements_ouverts,
+      section_activite_principale = EXCLUDED.section_activite_principale,
+      activite_principale_naf25 = EXCLUDED.activite_principale_naf25,
+      annee_tranche_effectif = EXCLUDED.annee_tranche_effectif,
+      est_bio = EXCLUDED.est_bio,
+      est_entrepreneur_individuel = EXCLUDED.est_entrepreneur_individuel,
+      est_ess = EXCLUDED.est_ess,
+      est_rge = EXCLUDED.est_rge,
+      est_societe_mission = EXCLUDED.est_societe_mission,
+      convention_collective_renseignee = EXCLUDED.convention_collective_renseignee,
+      liste_idcc = EXCLUDED.liste_idcc,
+      complements = EXCLUDED.complements,
+      dirigeants_complet = EXCLUDED.dirigeants_complet,
+      finances_historique = EXCLUDED.finances_historique,
+      google_business_status = EXCLUDED.google_business_status,
+      google_formatted_address = EXCLUDED.google_formatted_address,
+      google_maps_uri = EXCLUDED.google_maps_uri,
+      google_types = EXCLUDED.google_types,
+      google_primary_type = EXCLUDED.google_primary_type,
+      bodacc_procedures = EXCLUDED.bodacc_procedures,
+      bodacc_depots_comptes = EXCLUDED.bodacc_depots_comptes,
+      bodacc_derniere_modification = EXCLUDED.bodacc_derniere_modification
   `;
 
   const saved = await sql`
