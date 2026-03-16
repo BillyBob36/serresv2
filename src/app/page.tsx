@@ -145,6 +145,8 @@ export default function Home() {
     }
   };
 
+  const [quotaMessage, setQuotaMessage] = useState<string | null>(null);
+
   const enrichir = async (siren: string, nom: string, lat: number, lon: number) => {
     if (enrichCache[siren]) return;
     setEnrichLoading(siren);
@@ -156,7 +158,11 @@ export default function Home() {
       });
       const json = await resp.json();
       if (!resp.ok) {
-        alert(json.error || "Erreur lors de l'enrichissement");
+        if (json.quota_exceeded) {
+          setQuotaMessage(json.error);
+        } else {
+          alert(json.error || "Erreur lors de l'enrichissement");
+        }
         return;
       }
       if (json.data) {
@@ -271,6 +277,24 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      {/* Banniere quota API depasse */}
+      {quotaMessage && (
+        <div className="bg-amber-50 border-l-4 border-amber-500 px-6 py-3">
+          <div className="max-w-[1600px] mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-amber-600 text-xl">&#9888;</span>
+              <p className="text-amber-800 text-sm font-medium">{quotaMessage}</p>
+            </div>
+            <button
+              onClick={() => setQuotaMessage(null)}
+              className="text-amber-600 hover:text-amber-800 text-lg font-bold"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="max-w-[1600px] mx-auto px-6 py-6">
         {/* Stats */}
