@@ -8,6 +8,7 @@ export interface SerreMatch {
   commune_entreprise: string | null;
   distance_km: number | null;
   confiance: string | null;
+  excluded?: boolean;
 }
 
 export interface Serre {

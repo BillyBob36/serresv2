@@ -15,7 +15,7 @@ interface FicheDetailProps {
   onAddNote: (text: string) => void;
 }
 
-type TabId = "identite" | "dirigeants" | "contact" | "finances" | "juridique";
+type TabId = "identite" | "dirigeants" | "contact" | "finances" | "juridique" | "notes";
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: "identite", label: "Identite", icon: "\uD83C\uDFE2" },
@@ -23,6 +23,7 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: "contact", label: "Contact", icon: "\uD83D\uDCDE" },
   { id: "finances", label: "Finances", icon: "\uD83D\uDCB0" },
   { id: "juridique", label: "BDNB & Juridique", icon: "\u2696\uFE0F" },
+  { id: "notes", label: "Notes", icon: "\uD83D\uDCDD" },
 ];
 
 const STATUT_COLORS: Record<string, string> = {
@@ -84,7 +85,7 @@ export default function FicheDetail({
       <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-[460px] max-w-[90vw] bg-white shadow-2xl z-50 flex flex-col border-l border-gray-200 animate-slide-in">
+      <div className="fixed top-0 right-0 h-full w-[35vw] min-w-[400px] max-w-[90vw] bg-white shadow-2xl z-50 flex flex-col border-l border-gray-200 animate-slide-in">
         {/* Header */}
         <div className="px-5 py-4 border-b border-gray-200 bg-gray-50 shrink-0">
           <div className="flex items-start justify-between gap-3">
@@ -108,7 +109,6 @@ export default function FicheDetail({
               <p className="text-[11px] text-gray-400 mt-1">
                 SIREN {match?.siren || e?.siren}
                 {e?.siret_siege && <> &middot; SIRET {e.siret_siege}</>}
-                {e?.source && <> &middot; <span className="text-blue-400">{e.source}</span></>}
               </p>
             </div>
             <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none shrink-0 mt-0.5">&times;</button>
@@ -259,49 +259,6 @@ export default function FicheDetail({
                 );
               })()}
 
-              {/* Notes section */}
-              <div className="mt-6">
-                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Notes de prospection</p>
-                <div className="space-y-2 max-h-40 overflow-y-auto mb-2">
-                  {notes.length === 0 && <p className="text-xs text-gray-400">Aucune note</p>}
-                  {notes.map((n) => (
-                    <div key={n.id} className="text-xs border-l-2 border-blue-200 pl-2 py-1">
-                      <span className="text-gray-400">
-                        {new Date(n.created_at).toLocaleDateString("fr-FR")}{" "}
-                        {new Date(n.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                      {n.username && <span className="text-blue-500 ml-1">{n.username}</span>}
-                      <p className="text-gray-700 mt-0.5">{n.note}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex gap-1">
-                  <input
-                    type="text"
-                    value={noteText}
-                    onChange={(ev) => setNoteText(ev.target.value)}
-                    onKeyDown={(ev) => {
-                      if (ev.key === "Enter" && noteText.trim()) {
-                        onAddNote(noteText.trim());
-                        setNoteText("");
-                      }
-                    }}
-                    placeholder="Ajouter une note..."
-                    className="flex-1 text-xs px-2 py-1.5 border border-gray-300 rounded-lg text-gray-900 bg-white"
-                  />
-                  <button
-                    onClick={() => {
-                      if (noteText.trim()) {
-                        onAddNote(noteText.trim());
-                        setNoteText("");
-                      }
-                    }}
-                    className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700"
-                  >
-                    OK
-                  </button>
-                </div>
-              </div>
             </div>
           )}
 
@@ -354,7 +311,7 @@ export default function FicheDetail({
               )}
 
               <div className="h-3" />
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Google Places</p>
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Avis & presence en ligne</p>
               <Row label="Statut" value={e.google_business_status ? (googleStatusLabel[e.google_business_status] || e.google_business_status) : null} />
               <Row label="Note" value={e.note_google ? `${e.note_google}/5 (${e.avis_count || 0} avis)` : null} />
               <Row label="Type" value={e.google_primary_type} />
@@ -495,6 +452,51 @@ export default function FicheDetail({
               ) : (
                 <p className="text-xs text-gray-400">Aucune modification recente</p>
               )}
+            </div>
+          )}
+
+          {tab === "notes" && (
+            <div>
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-3">Notes de prospection</p>
+              <div className="space-y-2 max-h-[50vh] overflow-y-auto mb-3">
+                {notes.length === 0 && <p className="text-xs text-gray-400">Aucune note</p>}
+                {notes.map((n) => (
+                  <div key={n.id} className="text-xs border-l-2 border-blue-200 pl-2 py-1">
+                    <span className="text-gray-400">
+                      {new Date(n.created_at).toLocaleDateString("fr-FR")}{" "}
+                      {new Date(n.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                    {n.username && <span className="text-blue-500 ml-1">{n.username}</span>}
+                    <p className="text-gray-700 mt-0.5">{n.note}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-1">
+                <input
+                  type="text"
+                  value={noteText}
+                  onChange={(ev) => setNoteText(ev.target.value)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter" && noteText.trim()) {
+                      onAddNote(noteText.trim());
+                      setNoteText("");
+                    }
+                  }}
+                  placeholder="Ajouter une note..."
+                  className="flex-1 text-xs px-2 py-1.5 border border-gray-300 rounded-lg text-gray-900 bg-white"
+                />
+                <button
+                  onClick={() => {
+                    if (noteText.trim()) {
+                      onAddNote(noteText.trim());
+                      setNoteText("");
+                    }
+                  }}
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700"
+                >
+                  OK
+                </button>
+              </div>
             </div>
           )}
         </div>

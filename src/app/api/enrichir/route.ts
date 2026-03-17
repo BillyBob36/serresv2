@@ -328,9 +328,16 @@ export async function POST(request: NextRequest) {
       console.warn(`[QUOTA] Google Places : ${googleUsage.appels}/${googleUsage.limite}`);
     } else {
       try {
-        const searchBody: any = { textQuery: nom_entreprise };
-        if (lat && lon) {
-          searchBody.locationBias = { circle: { center: { latitude: lat, longitude: lon }, radius: 5000.0 } };
+        // A2: Ajouter la commune au textQuery pour desambiguiser
+        const communeSiege = gouvData.libelle_commune_siege || "";
+        const textQuery = communeSiege ? `${nom_entreprise} ${communeSiege}` : nom_entreprise;
+        const searchBody: any = { textQuery };
+
+        // A1: Utiliser les coordonnees du siege (API Gouv) au lieu du centroide serre
+        const searchLat = gouvData.latitude_siege || lat;
+        const searchLon = gouvData.longitude_siege || lon;
+        if (searchLat && searchLon) {
+          searchBody.locationBias = { circle: { center: { latitude: searchLat, longitude: searchLon }, radius: 5000.0 } };
         }
 
         const findResp = await fetch(
@@ -368,21 +375,34 @@ export async function POST(request: NextRequest) {
           const place = findJson.places?.[0];
 
           if (place) {
-            googleData = {
-              telephone: place.internationalPhoneNumber || place.nationalPhoneNumber || null,
-              site_web: place.websiteUri || null,
-              note_google: place.rating || null,
-              avis_count: place.userRatingCount || null,
-              horaires: place.regularOpeningHours?.weekdayDescriptions?.join(" | ") || null,
-              google_place_id: place.id || null,
-              google_business_status: place.businessStatus || null,
-              google_formatted_address: place.formattedAddress || null,
-              google_maps_uri: place.googleMapsUri || null,
-              google_types: place.types || null,
-              google_primary_type: place.primaryTypeDisplayName?.text || place.primaryType || null,
-            };
-            sources.push("google");
-            console.log(`[GOOGLE] OK pour "${nom_entreprise}": ${place.displayName?.text}, status=${place.businessStatus}, types=${place.types?.join(",")}`);
+            // A3: Valider que le resultat Google correspond bien a l'entreprise
+            const placeName = (place.displayName?.text || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            const expectedName = (nom_entreprise || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            const placeTokens = placeName.split(/\s+/).filter((t: string) => t.length > 2);
+            const expectedTokens = expectedName.split(/\s+/).filter((t: string) => t.length > 2);
+            const commonTokens = placeTokens.filter((t: string) => expectedTokens.some((e: string) => e.includes(t) || t.includes(e)));
+            const similarity = expectedTokens.length > 0 ? commonTokens.length / expectedTokens.length : 0;
+
+            if (similarity >= 0.3 || expectedTokens.length === 0) {
+              googleData = {
+                telephone: place.internationalPhoneNumber || place.nationalPhoneNumber || null,
+                site_web: place.websiteUri || null,
+                note_google: place.rating || null,
+                avis_count: place.userRatingCount || null,
+                horaires: place.regularOpeningHours?.weekdayDescriptions?.join(" | ") || null,
+                google_place_id: place.id || null,
+                google_business_status: place.businessStatus || null,
+                google_formatted_address: place.formattedAddress || null,
+                google_maps_uri: place.googleMapsUri || null,
+                google_types: place.types || null,
+                google_primary_type: place.primaryTypeDisplayName?.text || place.primaryType || null,
+              };
+              sources.push("google");
+              console.log(`[GOOGLE] OK pour "${nom_entreprise}": ${place.displayName?.text} (sim=${similarity.toFixed(2)}), status=${place.businessStatus}`);
+            } else {
+              googleError = `Resultat Google rejete: "${place.displayName?.text}" ne correspond pas a "${nom_entreprise}" (sim=${similarity.toFixed(2)})`;
+              console.warn(`[GOOGLE] REJETE pour "${nom_entreprise}": place="${place.displayName?.text}", sim=${similarity.toFixed(2)}`);
+            }
           } else {
             googleError = "Aucun resultat trouve";
           }

@@ -36,6 +36,9 @@ export default function Home() {
   const [enrichCache, setEnrichCache] = useState<Record<string, any>>({});
   const [enrichLoading, setEnrichLoading] = useState<string | null>(null);
 
+  // Exclude matches state (keyed by "serreId_siren")
+  const [excludedMatches, setExcludedMatches] = useState<Record<string, boolean>>({});
+
   // Fiche detail slide-over
   const [ficheOpen, setFicheOpen] = useState<{ serre: Serre; match: SerreMatch } | null>(null);
 
@@ -144,10 +147,47 @@ export default function Home() {
     }
   };
 
+  const toggleExclude = async (serreId: number, siren: string, exclude: boolean) => {
+    if (exclude && !confirm("Exclure ce prospect pour cette serre ?")) return;
+    const key = `${serreId}_${siren}`;
+    setExcludedMatches((prev) => ({ ...prev, [key]: exclude }));
+    try {
+      await fetch(`${API}/api/serres/exclude-match`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serre_id: serreId, siren, excluded: exclude }),
+      });
+    } catch (err) {
+      console.error("Erreur toggle exclude:", err);
+      setExcludedMatches((prev) => ({ ...prev, [key]: !exclude }));
+    }
+  };
+
+  const addMatchToSerre = async (serreId: number, centroidLat: number, centroidLon: number) => {
+    try {
+      const resp = await fetch(`${API}/api/serres/add-match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serre_id: serreId, lat: centroidLat, lon: centroidLon }),
+      });
+      if (resp.ok) {
+        fetchData();
+      } else {
+        const json = await resp.json().catch(() => ({}));
+        alert(json.error || "Impossible d'ajouter un prospect");
+      }
+    } catch (err) {
+      console.error("Erreur ajout prospect:", err);
+    }
+  };
+
   const [quotaMessage, setQuotaMessage] = useState<string | null>(null);
 
-  const enrichir = async (siren: string, nom: string, lat: number, lon: number) => {
-    if (enrichCache[siren]) return;
+  const enrichir = async (siren: string, nom: string, lat: number, lon: number, autoOpen?: { serre: Serre; match: SerreMatch }) => {
+    if (enrichCache[siren]) {
+      if (autoOpen) setFicheOpen(autoOpen);
+      return;
+    }
     setEnrichLoading(siren);
     try {
       const resp = await fetch(`${API}/api/enrichir`, {
@@ -166,6 +206,7 @@ export default function Home() {
       }
       if (json.data) {
         setEnrichCache((prev) => ({ ...prev, [siren]: json.data }));
+        if (autoOpen) setFicheOpen(autoOpen);
       }
     } catch (err) {
       console.error("Erreur enrichissement:", err);
@@ -186,6 +227,16 @@ export default function Home() {
   useEffect(() => {
     if (data.length > 0) {
       fetchProspections(data.map((s) => s.id));
+      // Initialiser excludedMatches depuis les top_matches
+      const excluded: Record<string, boolean> = {};
+      for (const s of data) {
+        for (const m of s.top_matches || []) {
+          if (m.excluded) {
+            excluded[`${s.id}_${m.siren}`] = true;
+          }
+        }
+      }
+      setExcludedMatches((prev) => ({ ...prev, ...excluded }));
     }
   }, [data, fetchProspections]);
 
@@ -492,14 +543,20 @@ export default function Home() {
                       </button>
                     </span>
                   </th>
-                  <th onClick={() => handleSort("nom_entreprise")} className="px-3 py-3 text-left font-medium text-gray-700 cursor-pointer hover:text-gray-900 select-none border-l-2 border-blue-300 bg-blue-50/40 min-w-[180px]" title="Entreprise prospect">
-                    Prospect <SortIcon col="nom_entreprise" />
+                  <th className="px-1 py-3 text-center font-medium text-gray-500 w-10" title="Voir sur carte">
+                    Carte
                   </th>
-                  <th className="px-3 py-3 text-left font-medium text-gray-500 bg-blue-50/40 whitespace-nowrap w-[140px]" title="Indicateurs rapides : etat, tel, web, note, bio, alertes">
+                  <th onClick={() => handleSort("nom_entreprise")} className="px-3 py-3 text-left font-medium text-gray-700 cursor-pointer hover:text-gray-900 select-none border-l-2 border-blue-300 bg-blue-50/40 min-w-[180px]" title="Entreprise">
+                    Entreprise <SortIcon col="nom_entreprise" />
+                  </th>
+                  <th className="px-1 py-3 text-center font-medium text-gray-500 bg-blue-50/40 w-10" title="Google Maps">
+                    Maps
+                  </th>
+                  <th className="px-3 py-3 text-left font-medium text-gray-500 bg-blue-50/40 whitespace-nowrap w-[120px]" title="Indicateurs rapides : etat, tel, web, bio, alertes">
                     Indicateurs
                   </th>
                   <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap">Statut</th>
-                  <th className="px-3 py-3 text-left font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap w-16">Match</th>
+                  <th className="px-1 py-3 text-center font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap w-10" title="Exclure ce prospect pour cette serre"></th>
                   <th className="px-3 py-3 text-center font-medium text-gray-700 bg-blue-50/40 whitespace-nowrap w-14" title="Ouvrir la fiche detail">Fiche</th>
                 </tr>
               </thead>
@@ -524,12 +581,7 @@ export default function Home() {
                       <>
                         <td rowSpan={rs} className="px-2 py-2 font-medium text-gray-900 text-center align-middle text-xs">{s.departement || "\u2014"}</td>
                         <td rowSpan={rs} className="px-3 py-2 text-gray-700 align-middle text-xs">
-                          <div className="flex items-center gap-1">
-                            <span className="truncate max-w-[120px]">{s.commune || "\u2014"}</span>
-                            <a href={`/carte?lat=${s.centroid_lat}&lon=${s.centroid_lon}&zoom=17`} className="inline-flex items-center justify-center w-5 h-5 rounded bg-green-50 hover:bg-green-100 text-green-600 transition shrink-0" title="Voir sur carte">
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
-                            </a>
-                          </div>
+                          <span className="truncate max-w-[120px] block">{s.commune || "\u2014"}</span>
                         </td>
                         <td rowSpan={rs} className="px-2 py-2 text-center align-middle">
                           <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${s.code_cultu === "CSS" ? "bg-purple-100 text-purple-700" : s.code_cultu === "FLA" ? "bg-pink-100 text-pink-700" : "bg-green-100 text-green-700"}`} title={CODE_CULTU_LABELS[s.code_cultu] || s.code_cultu}>{s.code_cultu}</span>
@@ -542,61 +594,65 @@ export default function Home() {
                             </span>
                           )}
                         </td>
+                        {/* Colonne Carte */}
+                        <td rowSpan={rs} className="px-1 py-2 text-center align-middle">
+                          <a href={`/carte?lat=${s.centroid_lat}&lon=${s.centroid_lon}&zoom=17`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center w-6 h-6 rounded bg-green-50 hover:bg-green-100 text-green-600 transition" title="Voir sur carte">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" /></svg>
+                          </a>
+                        </td>
                       </>
                     );
 
                     const rightCells = (m: SerreMatch | null, isFirst: boolean) => {
                       const en = m?.siren ? enrichCache[m.siren] : null;
+                      const isExcluded = m ? excludedMatches[`${s.id}_${m.siren}`] : false;
                       const statutColors: Record<string, string> = { nouveau: "bg-gray-100 text-gray-600", a_contacter: "bg-blue-100 text-blue-700", appele: "bg-yellow-100 text-yellow-700", interesse: "bg-green-100 text-green-700", pas_interesse: "bg-red-100 text-red-700", injoignable: "bg-orange-100 text-orange-700", client: "bg-purple-100 text-purple-700" };
+                      const rowClass = isExcluded ? "line-through opacity-40" : "";
                       return (
                         <>
-                          {/* Prospect */}
-                          <td className="px-3 py-2 border-l-2 border-blue-300 bg-blue-50/10">
+                          {/* Entreprise */}
+                          <td className={`px-3 py-2 border-l-2 border-blue-300 bg-blue-50/10 ${rowClass}`}>
                             {m ? (
                               <div className="flex items-center gap-1.5 text-xs">
                                 <span className="font-semibold text-blue-700 truncate max-w-[160px]" title={m.nom_entreprise || ""}>{m.nom_entreprise || "\u2014"}</span>
                                 <span className="text-gray-400 whitespace-nowrap text-[10px]">({Number(m.distance_km).toFixed(1)}km)</span>
                                 {isFirst && hasMultiple && (
-                                  <button onClick={() => toggleExpand(s.id)} className="ml-auto text-blue-500 hover:text-blue-700 text-[10px] whitespace-nowrap font-medium">
+                                  <button onClick={() => toggleExpand(s.id)} className="ml-auto flex items-center justify-center w-6 h-6 rounded-full bg-blue-500 text-white text-[10px] font-bold hover:bg-blue-600 transition shadow-sm">
                                     {isExpanded ? "\u25B2" : `+${matches.length - 1}`}
                                   </button>
                                 )}
                               </div>
                             ) : <span className="text-gray-300 text-xs">{"\u2014"}</span>}
                           </td>
+                          {/* Google Maps */}
+                          <td className={`px-1 py-2 text-center bg-blue-50/10 ${rowClass}`}>
+                            {en?.google_maps_uri ? (
+                              <a href={en.google_maps_uri} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center w-6 h-6 rounded bg-red-50 hover:bg-red-100 text-red-500 transition" title="Voir sur Google Maps">
+                                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+                              </a>
+                            ) : <span className="text-gray-200 text-[10px]">{"\u2014"}</span>}
+                          </td>
                           {/* Indicateurs compacts */}
-                          <td className="px-2 py-2 bg-blue-50/10">
+                          <td className={`px-2 py-2 bg-blue-50/10 ${rowClass}`}>
                             {m?.siren ? (
                               <div className="flex items-center gap-1 flex-wrap">
                                 {en ? (
                                   <>
-                                    {/* Etat actif/cesse */}
                                     <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] ${en.etat_administratif === "A" ? "bg-green-100 text-green-700" : en.etat_administratif === "C" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-400"}`} title={en.etat_administratif === "A" ? "Active" : en.etat_administratif === "C" ? "Cessee" : "?"}>
                                       {en.etat_administratif === "A" ? "\u2713" : en.etat_administratif === "C" ? "\u2717" : "?"}
                                     </span>
-                                    {/* Telephone */}
                                     <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] ${en.telephone ? "bg-blue-100 text-blue-700" : "bg-gray-50 text-gray-300"}`} title={en.telephone || "Pas de telephone"}>
                                       {"\uD83D\uDCDE"}
                                     </span>
-                                    {/* Site web */}
                                     <span className={`w-5 h-5 rounded flex items-center justify-center text-[10px] ${en.site_web ? "bg-blue-100 text-blue-700" : "bg-gray-50 text-gray-300"}`} title={en.site_web || "Pas de site web"}>
                                       {"\uD83C\uDF10"}
                                     </span>
-                                    {/* Note Google */}
-                                    {en.note_google && (
-                                      <span className="px-1 py-0.5 rounded bg-yellow-50 text-yellow-700 text-[10px] font-medium" title={`${en.note_google}/5 (${en.avis_count || 0} avis)`}>
-                                        {"\u2B50"}{en.note_google}
-                                      </span>
-                                    )}
-                                    {/* Bio */}
                                     {en.est_bio && (
                                       <span className="px-1 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-bold" title="Certifie Bio">BIO</span>
                                     )}
-                                    {/* Procedure collective */}
                                     {en.bodacc_procedures && Array.isArray(en.bodacc_procedures) && en.bodacc_procedures.length > 0 && (
                                       <span className="px-1 py-0.5 rounded bg-red-100 text-red-700 text-[10px] font-bold" title="Procedure collective en cours">{"\u26A0"}</span>
                                     )}
-                                    {/* Nb etablissements */}
                                     {en.nombre_etablissements_ouverts && en.nombre_etablissements_ouverts > 1 && (
                                       <span className="px-1 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[10px]" title={`${en.nombre_etablissements_ouverts} etablissements ouverts`}>
                                         {"\uD83C\uDFE2"}{en.nombre_etablissements_ouverts}
@@ -605,7 +661,7 @@ export default function Home() {
                                   </>
                                 ) : (
                                   <button
-                                    onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon))}
+                                    onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon), { serre: s, match: m })}
                                     disabled={enrichLoading === m.siren}
                                     className="px-2 py-0.5 rounded text-[10px] font-medium bg-orange-100 text-orange-700 hover:bg-orange-200"
                                   >
@@ -631,16 +687,17 @@ export default function Home() {
                               <option value="client">Client</option>
                             </select>
                           </td>
-                          {/* Match */}
-                          <td className="px-2 py-2 bg-blue-50/10">
-                            <div className="flex gap-0.5">
-                              {[
-                                { val: "confirme", icon: "\u2705", title: "Bon match" },
-                                { val: "mauvais_match", icon: "\u274C", title: "Mauvais match" },
-                              ].map(({ val, icon, title }) => (
-                                <button key={val} onClick={() => updateProspection(s.id, "match_valide", val)} className={`w-5 h-5 rounded text-[10px] ${(prospections[s.id]?.match_valide || "incertain") === val ? "ring-2 ring-blue-400 bg-blue-50" : "opacity-30 hover:opacity-100"}`} title={title}>{icon}</button>
-                              ))}
-                            </div>
+                          {/* Exclude toggle */}
+                          <td className="px-1 py-2 text-center bg-blue-50/10">
+                            {m?.siren ? (
+                              <button
+                                onClick={() => toggleExclude(s.id, m.siren, !isExcluded)}
+                                className={`w-5 h-5 rounded text-[10px] transition ${isExcluded ? "bg-green-100 text-green-600 hover:bg-green-200" : "bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600"}`}
+                                title={isExcluded ? "Reactiver ce prospect" : "Exclure ce prospect pour cette serre"}
+                              >
+                                {isExcluded ? "\u21A9" : "\u2717"}
+                              </button>
+                            ) : null}
                           </td>
                           {/* Fiche detail button */}
                           <td className="px-2 py-2 text-center bg-blue-50/10">
@@ -664,6 +721,8 @@ export default function Home() {
                       );
                     };
 
+                    const nonExcludedCount = matches.filter((m) => !excludedMatches[`${s.id}_${m.siren}`]).length;
+
                     if (visibleMatches.length === 0) {
                       return [
                         <tr key={s.id} className="border-b border-gray-100 hover:bg-blue-50/30 transition">
@@ -673,12 +732,29 @@ export default function Home() {
                       ];
                     }
 
-                    return visibleMatches.map((m, idx) => (
-                      <tr key={`${s.id}_${idx}`} className={`hover:bg-blue-50/30 transition ${idx === 0 ? "border-t border-gray-200" : ""} ${idx === rowSpan - 1 ? "border-b border-gray-200" : "border-b border-gray-100/50"}`}>
-                        {idx === 0 && leftCells(rowSpan)}
+                    const rows = visibleMatches.map((m, idx) => (
+                      <tr key={`${s.id}_${idx}`} className={`hover:bg-blue-50/30 transition ${isExpanded && idx > 0 ? "bg-blue-50/40" : ""} ${idx === 0 ? "border-t border-gray-200" : ""} ${idx === rowSpan - 1 ? "border-b border-gray-200" : "border-b border-gray-100/50"}`}>
+                        {idx === 0 && leftCells(rowSpan + (isExpanded && nonExcludedCount < 3 ? 1 : 0))}
                         {rightCells(m, idx === 0)}
                       </tr>
                     ));
+
+                    if (isExpanded && nonExcludedCount < 3) {
+                      rows.push(
+                        <tr key={`${s.id}_add`} className="border-b border-gray-200 bg-blue-50/20">
+                          <td colSpan={7} className="px-3 py-1.5 text-center border-l-2 border-blue-300">
+                            <button
+                              onClick={() => addMatchToSerre(s.id, Number(s.centroid_lat), Number(s.centroid_lon))}
+                              className="text-[10px] text-blue-500 hover:text-blue-700 font-medium hover:underline"
+                            >
+                              + Ajouter un prospect
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return rows;
                   })
                 )}
               </tbody>
