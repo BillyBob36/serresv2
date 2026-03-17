@@ -2,31 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || "";
-const APIFY_API_KEY = process.env.APIFY_API_KEY || "";
-const APIFY_SOCIETE_ACTOR = "ecomscrape~societe-business-details-scraper";
-
-/**
- * Construit l'URL Societe.com a partir du nom et du SIREN
- */
-function buildSocieteUrl(nom: string, siren: string): string {
-  const slug = nom
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return `https://www.societe.com/societe/${slug}-${siren}.html`;
-}
-
-/**
- * Parse un montant Societe.com ("3 817 000 \u20ac") en nombre
- */
-function parseSocieteAmount(val: string | undefined | null): number | null {
-  if (!val || val.includes("http") || val.includes("Non precise")) return null;
-  const cleaned = val.replace(/[^\d-]/g, "");
-  const num = parseInt(cleaned, 10);
-  return isNaN(num) ? null : num;
-}
 
 // =============================================
 // Table de correspondance des natures juridiques INSEE
@@ -102,7 +77,7 @@ async function getApiUsage(apiName: string): Promise<{ appels: number; limite: n
     WHERE api_name = ${apiName} AND mois = ${mois}
   `;
   if (rows.length === 0) {
-    const limite = apiName === "google_places" ? 4800 : apiName === "apify" ? 500 : 200;
+    const limite = apiName === "google_places" ? 4800 : 200;
     await sql`
       INSERT INTO api_usage (api_name, mois, appels, limite_mensuelle)
       VALUES (${apiName}, ${mois}, 0, ${limite})
@@ -122,7 +97,7 @@ async function incrementApiUsage(apiName: string): Promise<void> {
 }
 
 function formatUsageMessage(apiName: string, appels: number, limite: number): string {
-  const labels: Record<string, string> = { google_places: "Google Places", apify: "Apify Societe.com" };
+  const labels: Record<string, string> = { google_places: "Google Places" };
   const label = labels[apiName] || apiName;
   return `Quota ${label} atteint : ${appels}/${limite} appels ce mois-ci. Reessayez le mois prochain ou augmentez la limite dans la table api_usage.`;
 }
@@ -135,13 +110,9 @@ function formatUsageMessage(apiName: string, appels: number, limite: number): st
 //    complements (bio, ESS, RGE...), finances historique
 // 2. BODACC (GRATUIT, ILLIMITE) → procedures collectives, depots
 //    comptes, modifications
-// --- Controle des champs vides ---
 // 3. Google Places (PAYANT, credits gratuits/jour) → telephone, site web,
 //    note Google, horaires, avis, businessStatus, adresse Google,
 //    lien Maps, types
-// --- Controle des champs vides ---
-// 4. Apify Societe.com (PAYANT) → CA, resultat net, email, telephone,
-//    site web — UNIQUEMENT pour les champs encore vides
 // =============================================
 
 export async function POST(request: NextRequest) {
@@ -177,13 +148,11 @@ export async function POST(request: NextRequest) {
   let gouvData: any = {};
   let googleData: any = {};
   let bodaccData: any = {};
-  let apifyData: any = {};
   const sources: string[] = [];
 
   let gouvError = "";
   let googleError = "";
   let bodaccError = "";
-  let apifyError = "";
 
   // ======================================================
   // ETAPE 1 : API Gouvernement (GRATUIT, ILLIMITE)
@@ -368,10 +337,7 @@ export async function POST(request: NextRequest) {
     console.error("[BODACC] Erreur:", err);
   }
 
-  // ======================================================
-  // CONTROLE 1 : quels champs restent vides apres API gratuites ?
-  // ======================================================
-  console.log(`[CONTROLE 1] Apres API gratuites: CA=${gouvData.chiffre_affaires || "VIDE"}, RN=${gouvData.resultat_net || "VIDE"}, Tel=VIDE, Web=VIDE, Email=VIDE`);
+  console.log(`[CONTROLE] Apres API gratuites: CA=${gouvData.chiffre_affaires || "VIDE"}, RN=${gouvData.resultat_net || "VIDE"}, Dirigeants=${gouvData.dirigeants_complet?.length || 0}`);
 
   // ======================================================
   // ETAPE 3 : Google Places (PAYANT, 4800/mois gratuit)
@@ -487,147 +453,7 @@ export async function POST(request: NextRequest) {
     console.warn(`[GOOGLE] SAUTE: pas de nom entreprise (nom_entreprise="${nom_entreprise}", gouvData.nom_complet="${gouvData.nom_complet}")`);
   }
 
-  // ======================================================
-  // CONTROLE 2 : quels champs restent vides apres Google ?
-  // ======================================================
-  const champsManquants = {
-    besoinCA: !gouvData.chiffre_affaires,
-    besoinRN: !gouvData.resultat_net,
-    besoinEmail: true,
-    besoinTelephone: !googleData.telephone,
-    besoinSiteWeb: !googleData.site_web,
-  };
-  const besoinApify = champsManquants.besoinCA || champsManquants.besoinRN
-    || champsManquants.besoinEmail || champsManquants.besoinTelephone || champsManquants.besoinSiteWeb;
-
-  console.log(`[CONTROLE 2] Apres Google: CA=${gouvData.chiffre_affaires || "VIDE"}, RN=${gouvData.resultat_net || "VIDE"}, Tel=${googleData.telephone || "VIDE"}, Web=${googleData.site_web || "VIDE"}, Email=VIDE`);
-  console.log(`[CONTROLE 2] Besoin Apify: ${besoinApify} (CA=${champsManquants.besoinCA}, RN=${champsManquants.besoinRN}, Email=${champsManquants.besoinEmail}, Tel=${champsManquants.besoinTelephone}, Web=${champsManquants.besoinSiteWeb})`);
-
-  // ======================================================
-  // ETAPE 4 : Apify Societe.com (PAYANT)
-  // Uniquement pour les champs encore vides apres les etapes
-  // gratuites et Google. Scrape Societe.com via Apify Actor.
-  // ======================================================
-  if (besoinApify && APIFY_API_KEY) {
-    const apifyUsage = await getApiUsage("apify");
-    if (apifyUsage.appels >= apifyUsage.limite) {
-      apifyError = formatUsageMessage("apify", apifyUsage.appels, apifyUsage.limite);
-      console.warn(`[QUOTA] Apify : ${apifyUsage.appels}/${apifyUsage.limite}`);
-    } else {
-      try {
-        const nomForUrl = gouvData.nom_complet || nom_entreprise || siren;
-        const societeUrl = buildSocieteUrl(nomForUrl, siren);
-        console.log(`[APIFY] Lancement scrape Societe.com: ${societeUrl}`);
-
-        const apifyResp = await fetch(
-          `https://api.apify.com/v2/acts/${APIFY_SOCIETE_ACTOR}/run-sync-get-dataset-items?token=${APIFY_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              urls: [societeUrl],
-              max_retries_per_url: 2,
-              proxy: {
-                useApifyProxy: true,
-                apifyProxyGroups: ["RESIDENTIAL"],
-                apifyProxyCountry: "FR",
-              },
-              max_items_per_url: 1,
-            }),
-            signal: AbortSignal.timeout(120000),
-          }
-        );
-
-        if (apifyResp.ok) {
-          await incrementApiUsage("apify");
-          const results = await apifyResp.json();
-          const company = Array.isArray(results) ? results[0] : null;
-
-          if (company) {
-            // Extraire CA et Resultat net depuis key_figures
-            const caRow = company.key_figures?.find((f: any) =>
-              f.title && f.title.includes("Chiffre d'affaires"));
-            const rnRow = company.key_figures?.find((f: any) =>
-              f.title && (f.title.includes("sultat net") || f.title.includes("Bénéfice")));
-
-            // Trouver l'annee la plus recente dans les colonnes
-            const getLatestValue = (row: any): number | null => {
-              if (!row) return null;
-              const years = Object.keys(row).filter(k => k !== "title" && k !== "δ_variation");
-              const sorted = years.sort().reverse();
-              for (const y of sorted) {
-                const val = parseSocieteAmount(row[y]);
-                if (val !== null) return val;
-              }
-              return null;
-            };
-
-            // Extraire email depuis activities
-            const emailEntry = company.activities?.find((a: any) =>
-              a.label && a.label.toLowerCase().includes("mail"));
-            const rawEmail = emailEntry?.value || null;
-            const email = rawEmail && !rawEmail.includes("véler") && !rawEmail.includes("Reveal")
-              && rawEmail.includes("@") ? rawEmail : null;
-
-            // Extraire telephone depuis activities
-            const telEntry = company.activities?.find((a: any) =>
-              a.label && a.label.toLowerCase().includes("phone"));
-            const rawTel = telEntry?.value || null;
-            const telephone = rawTel && !rawTel.includes("fficher") && !rawTel.includes("Afficher")
-              ? rawTel : null;
-
-            // Remplir uniquement les champs manquants
-            if (champsManquants.besoinCA) {
-              const ca = getLatestValue(caRow);
-              if (ca !== null) apifyData.chiffre_affaires = ca;
-            }
-            if (champsManquants.besoinRN) {
-              const rn = getLatestValue(rnRow);
-              if (rn !== null) apifyData.resultat_net = rn;
-            }
-            if (champsManquants.besoinEmail && email) {
-              apifyData.email = email;
-            }
-            if (champsManquants.besoinTelephone && telephone) {
-              apifyData.telephone = telephone;
-            }
-
-            if (Object.keys(apifyData).length > 0) {
-              sources.push("apify");
-            }
-            console.log(`[APIFY] OK siren=${siren}: CA=${apifyData.chiffre_affaires || "-"}, RN=${apifyData.resultat_net || "-"}, Email=${apifyData.email || "-"}, Tel=${apifyData.telephone || "-"}`);
-          } else {
-            apifyError = "Aucun resultat retourne par Apify";
-            console.warn(`[APIFY] Aucun resultat pour siren=${siren}`);
-          }
-        } else {
-          const errBody = await apifyResp.text().catch(() => "");
-          // Parser les erreurs Apify specifiques
-          try {
-            const errJson = JSON.parse(errBody);
-            if (errJson?.error?.type === "actor-is-not-rented") {
-              apifyError = "Acteur Apify non loue. Louez-le sur https://console.apify.com/actors/tRDrNzskGqoxT0EpH";
-              console.error(`[APIFY] ACTOR NON LOUE — Allez sur https://console.apify.com/actors/tRDrNzskGqoxT0EpH pour louer l'acteur`);
-            } else {
-              apifyError = `HTTP ${apifyResp.status}: ${errJson?.error?.message || errBody.slice(0, 200)}`;
-              console.error(`[APIFY] ${apifyResp.status} pour siren=${siren}: ${errJson?.error?.message || errBody.slice(0, 200)}`);
-            }
-          } catch {
-            apifyError = `HTTP ${apifyResp.status}: ${errBody.slice(0, 200)}`;
-            console.error(`[APIFY] ${apifyResp.status} pour siren=${siren}: ${errBody.slice(0, 200)}`);
-          }
-        }
-      } catch (err) {
-        apifyError = String(err);
-        console.error("[APIFY] Erreur:", err);
-      }
-    }
-  } else if (besoinApify && !APIFY_API_KEY) {
-    apifyError = "Cle API Apify manquante";
-    console.warn(`[APIFY] SAUTE: variable APIFY_API_KEY non configuree dans l'environnement`);
-  } else if (!besoinApify) {
-    console.log(`[APIFY] Non appele — tous les champs deja remplis`);
-  }
+  console.log(`[CONTROLE] Apres Google: Tel=${googleData.telephone || "VIDE"}, Web=${googleData.site_web || "VIDE"}, Note=${googleData.note_google || "VIDE"}`);
 
   // ======================================================
   // Resultat : fusionner les sources (gouv prioritaire)
@@ -637,9 +463,8 @@ export async function POST(request: NextRequest) {
       `Gouv: ${gouvError || "echec"}`,
       `BODACC: ${bodaccError || "aucune donnee"}`,
       `Google: ${googleError || "echec"}`,
-      `Apify: ${apifyError || "non appele"}`,
     ].join(" | ");
-    const isQuotaError = apifyError.includes("Quota") || googleError.includes("Quota");
+    const isQuotaError = googleError.includes("Quota");
     console.error(`Enrichissement echoue siren=${siren}: ${details}`);
     return NextResponse.json(
       { error: isQuotaError ? details : `Enrichissement echoue. ${details}`, data: null, quota_exceeded: isQuotaError },
@@ -650,11 +475,10 @@ export async function POST(request: NextRequest) {
   // Log de synthese enrichissement
   const synthese = {
     dirigeants: !!(gouvData.dirigeants_complet?.length || gouvData.dirigeants?.length),
-    telephone: !!(googleData.telephone || apifyData.telephone),
+    telephone: !!googleData.telephone,
     site_web: !!googleData.site_web,
-    email: !!apifyData.email,
-    chiffre_affaires: !!(gouvData.chiffre_affaires || apifyData.chiffre_affaires),
-    resultat_net: !!(gouvData.resultat_net || apifyData.resultat_net),
+    chiffre_affaires: !!gouvData.chiffre_affaires,
+    resultat_net: !!gouvData.resultat_net,
     adresse: !!gouvData.adresse_siege,
     forme_juridique: !!gouvData.forme_juridique,
     bodacc: !!(bodaccData.bodacc_procedures || bodaccData.bodacc_depots_comptes),
@@ -663,25 +487,24 @@ export async function POST(request: NextRequest) {
   const champsRemplis = Object.values(synthese).filter(Boolean).length;
   const champsTotal = Object.keys(synthese).length;
   console.log(`[SYNTHESE] siren=${siren}: ${champsRemplis}/${champsTotal} champs remplis — ${JSON.stringify(synthese)}`);
-  if (apifyError) console.warn(`[SYNTHESE] Apify: ${apifyError}`);
   if (googleError) console.warn(`[SYNTHESE] Google: ${googleError}`);
 
-  // Fusion : gouvData (base) → BODACC (juridique) → Google (contact) → Apify (champs manquants)
+  // Fusion : gouvData (base) → BODACC (juridique) → Google (contact)
   const record: any = {
     siren,
     // Champs existants
     forme_juridique: gouvData.forme_juridique || null,
     date_creation: gouvData.date_creation || null,
     tranche_effectifs: gouvData.tranche_effectifs || null,
-    chiffre_affaires: gouvData.chiffre_affaires || apifyData.chiffre_affaires || null,
-    resultat_net: gouvData.resultat_net || apifyData.resultat_net || null,
+    chiffre_affaires: gouvData.chiffre_affaires || null,
+    resultat_net: gouvData.resultat_net || null,
     adresse_siege: gouvData.adresse_siege || null,
     code_naf: gouvData.code_naf || null,
     libelle_naf: gouvData.libelle_naf || null,
     dirigeants: gouvData.dirigeants || null,
-    telephone: googleData.telephone || apifyData.telephone || null,
+    telephone: googleData.telephone || null,
     site_web: googleData.site_web || null,
-    email: apifyData.email || null,
+    email: null,
     note_google: googleData.note_google || null,
     horaires: googleData.horaires || null,
     avis_count: googleData.avis_count || null,
@@ -841,7 +664,6 @@ export async function POST(request: NextRequest) {
         ...(gouvError ? { gouv: gouvError } : {}),
         ...(googleError ? { google: googleError } : {}),
         ...(bodaccError ? { bodacc: bodaccError } : {}),
-        ...(apifyError ? { apify: apifyError } : {}),
       },
     },
   });
@@ -872,6 +694,6 @@ export async function GET() {
   return NextResponse.json({
     mois,
     usage,
-    note: "L'API gouv et BODACC sont gratuites et illimitees. Google Places et Apify Societe.com sont suivis ici.",
+    note: "L'API gouv et BODACC sont gratuites et illimitees. Seul Google Places est suivi ici (quota mensuel).",
   });
 }
