@@ -22,7 +22,7 @@ const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: "dirigeants", label: "Dirigeants", icon: "\uD83D\uDC64" },
   { id: "contact", label: "Contact", icon: "\uD83D\uDCDE" },
   { id: "finances", label: "Finances", icon: "\uD83D\uDCB0" },
-  { id: "juridique", label: "BDNB & Juridique", icon: "\u2696\uFE0F" },
+  { id: "juridique", label: "Juridique", icon: "\u2696\uFE0F" },
   { id: "notes", label: "Notes", icon: "\uD83D\uDCDD" },
 ];
 
@@ -96,7 +96,7 @@ export default function FicheDetail({
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {etatLabel && <Badge color={etatColor}>{etatLabel}</Badge>}
                 {e?.est_bio && <Badge color="bg-emerald-100 text-emerald-700">BIO</Badge>}
-                {e?.bodacc_procedures && e.bodacc_procedures.length > 0 && (
+                {e?.bodacc_procedures && Array.isArray(e.bodacc_procedures) && e.bodacc_procedures.length > 0 && (
                   <Badge color="bg-red-100 text-red-700">Proc. collective</Badge>
                 )}
                 {e?.google_business_status && e.google_business_status !== "OPERATIONAL" && (
@@ -403,23 +403,6 @@ export default function FicheDetail({
 
           {e && tab === "juridique" && (
             <div>
-              {/* BDNB */}
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Batiment BDNB</p>
-              {serre?.bdnb_id ? (
-                <div className="space-y-1 mb-4">
-                  <Row label="Nature" value={serre.bdnb_nature || "Serre"} />
-                  <Row label="Surface" value={serre.bdnb_surface_m2 ? `${Number(serre.bdnb_surface_m2).toLocaleString("fr-FR")} m\u00B2` : null} />
-                  <Row label="Hauteur" value={serre.bdnb_hauteur_moy ? `${serre.bdnb_hauteur_moy}m (max ${serre.bdnb_hauteur_max}m)` : null} />
-                  <Row label="Parcelle cadastrale" value={serre.bdnb_parcelle} />
-                  <Row label="Adresse" value={serre.bdnb_adresse} />
-                  {serre.bdnb_prop_siren && <Row label="Proprietaire SIREN" value={serre.bdnb_prop_siren} />}
-                  {serre.bdnb_prop_nom && <Row label="Proprietaire" value={serre.bdnb_prop_nom} />}
-                  <Row label="Distance" value={serre.bdnb_distance_m ? `${Math.round(Number(serre.bdnb_distance_m))}m` : null} />
-                </div>
-              ) : (
-                <p className="text-xs text-gray-400 mb-4">Aucune donnee BDNB</p>
-              )}
-
               {/* Procedures collectives */}
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Procedures collectives (BODACC)</p>
               {e.bodacc_procedures && Array.isArray(e.bodacc_procedures) && e.bodacc_procedures.length > 0 ? (

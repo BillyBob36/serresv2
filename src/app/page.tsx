@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import type { Serre, SerreMatch, SerresResponse, Stats } from "@/lib/types";
 import { CODE_CULTU_LABELS } from "@/lib/types";
 import FicheDetail from "@/components/FicheDetail";
+import FicheSerre from "@/components/FicheSerre";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
@@ -39,7 +40,10 @@ export default function Home() {
   // Exclude matches state (keyed by "serreId_siren")
   const [excludedMatches, setExcludedMatches] = useState<Record<string, boolean>>({});
 
-  // Fiche detail slide-over
+  // Fiche serre (left panel)
+  const [ficheSerreOpen, setFicheSerreOpen] = useState<Serre | null>(null);
+
+  // Fiche detail entreprise (right panel)
   const [ficheOpen, setFicheOpen] = useState<{ serre: Serre; match: SerreMatch } | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -223,20 +227,40 @@ export default function Home() {
     fetchStats();
   }, [fetchStats]);
 
-  // Charger les prospections quand les données changent
+  // Charger les prospections + enrichissements quand les données changent
   useEffect(() => {
     if (data.length > 0) {
       fetchProspections(data.map((s) => s.id));
       // Initialiser excludedMatches depuis les top_matches
       const excluded: Record<string, boolean> = {};
+      const sirensToFetch: string[] = [];
       for (const s of data) {
         for (const m of s.top_matches || []) {
           if (m.excluded) {
             excluded[`${s.id}_${m.siren}`] = true;
           }
+          if (m.siren && !enrichCache[m.siren]) {
+            sirensToFetch.push(m.siren);
+          }
         }
       }
       setExcludedMatches((prev) => ({ ...prev, ...excluded }));
+      // Batch fetch enrichissement data from DB
+      const uniqueSirens = [...new Set(sirensToFetch)];
+      if (uniqueSirens.length > 0) {
+        fetch(`${API}/api/enrichir/batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sirens: uniqueSirens }),
+        })
+          .then((r) => r.json())
+          .then((json) => {
+            if (json.data && Object.keys(json.data).length > 0) {
+              setEnrichCache((prev) => ({ ...prev, ...json.data }));
+            }
+          })
+          .catch((err) => console.error("Batch enrich fetch error:", err));
+      }
     }
   }, [data, fetchProspections]);
 
@@ -506,14 +530,14 @@ export default function Home() {
             <button
               onClick={() => setPage(Math.max(1, page - 1))}
               disabled={page <= 1}
-              className="px-3 py-1 text-sm border rounded-lg disabled:opacity-30"
+              className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-lg bg-white text-gray-700 hover:bg-gray-100 shadow-sm disabled:opacity-30"
             >
               Precedent
             </button>
             <button
               onClick={() => setPage(Math.min(totalPages, page + 1))}
               disabled={page >= totalPages}
-              className="px-3 py-1 text-sm border rounded-lg disabled:opacity-30"
+              className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-lg bg-white text-gray-700 hover:bg-gray-100 shadow-sm disabled:opacity-30"
             >
               Suivant
             </button>
@@ -526,6 +550,9 @@ export default function Home() {
             <table className="w-full text-sm border-collapse">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
+                  <th className="px-2 py-3 text-center font-medium text-gray-600 w-14" title="ID Serre — cliquer pour ouvrir la fiche serre">
+                    ID
+                  </th>
                   <th onClick={() => handleSort("departement")} className="px-2 py-3 text-left font-medium text-gray-600 cursor-pointer hover:text-gray-900 select-none w-14" title="Departement">
                     Dept <SortIcon col="departement" />
                   </th>
@@ -579,6 +606,15 @@ export default function Home() {
 
                     const leftCells = (rs: number) => (
                       <>
+                        <td rowSpan={rs} className="px-2 py-2 text-center align-middle">
+                          <button
+                            onClick={() => setFicheSerreOpen(s)}
+                            className="text-xs font-mono text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                            title="Ouvrir la fiche serre"
+                          >
+                            {s.id}
+                          </button>
+                        </td>
                         <td rowSpan={rs} className="px-2 py-2 font-medium text-gray-900 text-center align-middle text-xs">{s.departement || "\u2014"}</td>
                         <td rowSpan={rs} className="px-3 py-2 text-gray-700 align-middle text-xs">
                           <span className="truncate max-w-[120px] block">{s.commune || "\u2014"}</span>
@@ -764,15 +800,32 @@ export default function Home() {
 
         {/* Pagination bas */}
         <div className="flex justify-center gap-2 mt-4 mb-8">
-          <button onClick={() => setPage(1)} disabled={page <= 1} className="px-3 py-1 text-sm border rounded-lg disabled:opacity-30">Debut</button>
-          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1} className="px-3 py-1 text-sm border rounded-lg disabled:opacity-30">Precedent</button>
-          <span className="px-3 py-1 text-sm text-gray-500">Page {page} / {totalPages}</span>
-          <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page >= totalPages} className="px-3 py-1 text-sm border rounded-lg disabled:opacity-30">Suivant</button>
-          <button onClick={() => setPage(totalPages)} disabled={page >= totalPages} className="px-3 py-1 text-sm border rounded-lg disabled:opacity-30">Fin</button>
+          <button onClick={() => setPage(1)} disabled={page <= 1} className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-lg bg-white text-gray-700 hover:bg-gray-100 shadow-sm disabled:opacity-30 disabled:hover:bg-white">Debut</button>
+          <button onClick={() => setPage(Math.max(1, page - 1))} disabled={page <= 1} className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-lg bg-white text-gray-700 hover:bg-gray-100 shadow-sm disabled:opacity-30 disabled:hover:bg-white">Precedent</button>
+          <span className="px-4 py-1.5 text-sm font-semibold text-gray-700 bg-gray-100 rounded-lg">Page {page} / {totalPages}</span>
+          <button onClick={() => setPage(Math.min(totalPages, page + 1))} disabled={page >= totalPages} className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-lg bg-white text-gray-700 hover:bg-gray-100 shadow-sm disabled:opacity-30 disabled:hover:bg-white">Suivant</button>
+          <button onClick={() => setPage(totalPages)} disabled={page >= totalPages} className="px-3 py-1.5 text-sm font-medium border border-gray-300 rounded-lg bg-white text-gray-700 hover:bg-gray-100 shadow-sm disabled:opacity-30 disabled:hover:bg-white">Fin</button>
         </div>
       </div>
 
-      {/* Fiche detail slide-over */}
+      {/* Fiche serre slide-over (gauche) */}
+      {ficheSerreOpen && (
+        <FicheSerre
+          serre={ficheSerreOpen}
+          onClose={() => setFicheSerreOpen(null)}
+          onOpenEntreprise={(serre, match) => {
+            setFicheSerreOpen(null);
+            setFicheOpen({ serre, match });
+            if (match.siren && !enrichCache[match.siren]) {
+              enrichir(match.siren, match.nom_entreprise || "", Number(serre.centroid_lat), Number(serre.centroid_lon));
+            }
+            fetchNotes(serre.id);
+          }}
+          excludedMatches={excludedMatches}
+        />
+      )}
+
+      {/* Fiche entreprise slide-over (droite) */}
       {ficheOpen && (
         <FicheDetail
           data={ficheOpen.match?.siren ? enrichCache[ficheOpen.match.siren] : null}
