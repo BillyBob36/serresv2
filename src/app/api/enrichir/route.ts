@@ -655,7 +655,7 @@ export async function POST(request: NextRequest) {
     ) VALUES (
       ${record.siren}, ${record.forme_juridique}, ${record.date_creation}, ${record.tranche_effectifs},
       ${record.chiffre_affaires}, ${record.resultat_net}, ${record.adresse_siege}, ${record.code_naf}, ${record.libelle_naf},
-      ${record.dirigeants ? JSON.stringify(record.dirigeants) : null},
+      ${record.dirigeants ? sql.json(record.dirigeants) : null},
       ${record.telephone}, ${record.site_web}, ${record.email}, ${record.note_google}, ${record.horaires}, ${record.avis_count},
       ${record.google_place_id}, ${record.enrichi_par}, ${record.source},
       ${record.etat_administratif}, ${record.date_fermeture}, ${record.nom_complet}, ${record.nom_raison_sociale}, ${record.sigle},
@@ -664,18 +664,18 @@ export async function POST(request: NextRequest) {
       ${record.section_activite_principale}, ${record.activite_principale_naf25}, ${record.annee_tranche_effectif},
       ${record.est_bio}, ${record.est_entrepreneur_individuel}, ${record.est_ess}, ${record.est_rge}, ${record.est_societe_mission},
       ${record.convention_collective_renseignee},
-      ${record.liste_idcc ? JSON.stringify(record.liste_idcc) : null},
-      ${record.complements ? JSON.stringify(record.complements) : null},
-      ${record.dirigeants_complet ? JSON.stringify(record.dirigeants_complet) : null},
-      ${record.finances_historique ? JSON.stringify(record.finances_historique) : null},
+      ${record.liste_idcc ? sql.json(record.liste_idcc) : null},
+      ${record.complements ? sql.json(record.complements) : null},
+      ${record.dirigeants_complet ? sql.json(record.dirigeants_complet) : null},
+      ${record.finances_historique ? sql.json(record.finances_historique) : null},
       ${record.google_business_status}, ${record.google_formatted_address}, ${record.google_maps_uri},
-      ${record.google_types ? JSON.stringify(record.google_types) : null},
+      ${record.google_types ? sql.json(record.google_types) : null},
       ${record.google_primary_type},
-      ${record.insee_periodes_historique ? JSON.stringify(record.insee_periodes_historique) : null},
+      ${record.insee_periodes_historique ? sql.json(record.insee_periodes_historique) : null},
       ${record.insee_date_dernier_traitement}, ${record.insee_nombre_periodes},
-      ${record.bodacc_procedures ? JSON.stringify(record.bodacc_procedures) : null},
-      ${record.bodacc_depots_comptes ? JSON.stringify(record.bodacc_depots_comptes) : null},
-      ${record.bodacc_derniere_modification ? JSON.stringify(record.bodacc_derniere_modification) : null}
+      ${record.bodacc_procedures ? sql.json(record.bodacc_procedures) : null},
+      ${record.bodacc_depots_comptes ? sql.json(record.bodacc_depots_comptes) : null},
+      ${record.bodacc_derniere_modification ? sql.json(record.bodacc_derniere_modification) : null}
     )
     ON CONFLICT (siren) DO UPDATE SET
       forme_juridique = EXCLUDED.forme_juridique,

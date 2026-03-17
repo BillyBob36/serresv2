@@ -19,7 +19,7 @@ type TabId = "identite" | "dirigeants" | "contact" | "finances" | "juridique" | 
 
 const TABS: { id: TabId; label: string; icon: string }[] = [
   { id: "identite", label: "Identite", icon: "\uD83C\uDFE2" },
-  { id: "dirigeants", label: "Dirigeants", icon: "\uD83D\uDC64" },
+  { id: "dirigeants", label: "Personnes", icon: "\uD83D\uDC65" },
   { id: "contact", label: "Contact", icon: "\uD83D\uDCDE" },
   { id: "finances", label: "Finances", icon: "\uD83D\uDCB0" },
   { id: "juridique", label: "Juridique", icon: "\u2696\uFE0F" },
@@ -52,6 +52,14 @@ function Badge({ children, color }: { children: React.ReactNode; color: string }
       {children}
     </span>
   );
+}
+
+function safeJsonArray(val: any): any[] {
+  if (Array.isArray(val)) return val;
+  if (typeof val === "string") {
+    try { const parsed = JSON.parse(val); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  }
+  return [];
 }
 
 export default function FicheDetail({
@@ -214,36 +222,66 @@ export default function FicheDetail({
 
           {e && tab === "dirigeants" && (
             <div>
-              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-3">Dirigeants</p>
               {(() => {
-                const dirs = Array.isArray(e.dirigeants_complet) ? e.dirigeants_complet : (Array.isArray(e.dirigeants) ? e.dirigeants : []);
-                if (dirs.length === 0) return <p className="text-xs text-gray-400">Aucun dirigeant connu</p>;
+                const dirsComplet = safeJsonArray(e.dirigeants_complet);
+                const dirsSimplifie = safeJsonArray(e.dirigeants);
+                const dirs = dirsComplet.length > 0 ? dirsComplet : dirsSimplifie;
+
+                const personnesPhysiques = dirs.filter((d: any) => d.type_dirigeant !== "personne morale");
+                const personnesMorales = dirs.filter((d: any) => d.type_dirigeant === "personne morale");
+
+                if (dirs.length === 0) return <p className="text-xs text-gray-400">Aucune personne connue</p>;
                 return (
-                  <div className="space-y-2">
-                    {dirs.map((d: any, i: number) => (
-                      <div key={i} className="border border-gray-200 rounded-lg p-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm">{d.type_dirigeant === "personne morale" ? "\uD83C\uDFE2" : "\uD83D\uDC64"}</span>
-                          <div>
-                            <p className="text-sm font-semibold text-gray-900">
-                              {d.type_dirigeant === "personne morale"
-                                ? (d.denomination || d.siren || "PM")
-                                : `${d.prenoms || d.prenom || ""} ${d.nom || ""}`.trim() || "—"}
-                            </p>
-                            <div className="flex flex-wrap gap-2 text-[11px] text-gray-500 mt-0.5">
-                              {d.qualite && <span>{d.qualite}</span>}
-                              {d.nationalite && <span>&middot; {d.nationalite}</span>}
-                              {d.date_de_naissance && <span>&middot; ne(e) {d.date_de_naissance}</span>}
-                              {d.type_dirigeant === "personne morale" && d.siren && <span>&middot; SIREN {d.siren}</span>}
+                  <>
+                    {personnesPhysiques.length > 0 && (
+                      <>
+                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Dirigeants & personnes physiques ({personnesPhysiques.length})</p>
+                        <div className="space-y-2 mb-4">
+                          {personnesPhysiques.map((d: any, i: number) => (
+                            <div key={i} className="border border-gray-200 rounded-lg p-3">
+                              <div className="flex items-start gap-3">
+                                <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-sm shrink-0">
+                                  {(d.prenoms || d.prenom || "?").charAt(0)}{(d.nom || "?").charAt(0)}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-gray-900">
+                                    {`${d.prenoms || d.prenom || ""} ${d.nom || ""}`.trim() || "—"}
+                                  </p>
+                                  {d.qualite && <p className="text-xs text-blue-600 font-medium">{d.qualite}</p>}
+                                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500 mt-1">
+                                    {d.nationalite && <span>Nationalite: {d.nationalite}</span>}
+                                    {d.date_de_naissance && <span>Ne(e): {d.date_de_naissance}</span>}
+                                    {d.annee_de_naissance && !d.date_de_naissance && <span>Annee: {d.annee_de_naissance}</span>}
+                                  </div>
+                                </div>
+                              </div>
                             </div>
-                          </div>
+                          ))}
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      </>
+                    )}
+                    {personnesMorales.length > 0 && (
+                      <>
+                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Personnes morales ({personnesMorales.length})</p>
+                        <div className="space-y-2">
+                          {personnesMorales.map((d: any, i: number) => (
+                            <div key={i} className="border border-gray-200 rounded-lg p-3">
+                              <div className="flex items-start gap-3">
+                                <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 text-sm shrink-0">{"\uD83C\uDFE2"}</div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-gray-900">{d.denomination || d.siren || "PM"}</p>
+                                  {d.qualite && <p className="text-xs text-blue-600 font-medium">{d.qualite}</p>}
+                                  {d.siren && <p className="text-[11px] text-gray-400">SIREN {d.siren}</p>}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </>
                 );
               })()}
-
             </div>
           )}
 
