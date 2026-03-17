@@ -549,6 +549,15 @@ export default function Home() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead className="bg-gray-50 border-b border-gray-200">
+                {/* En-tête global : Serre / Parcelles | Entreprise / Prospects */}
+                <tr className="bg-gray-100 border-b border-gray-300">
+                  <th colSpan={6} className="px-4 py-2 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">
+                    Serre / Parcelles
+                  </th>
+                  <th colSpan={6} className="px-4 py-2 text-left text-xs font-bold text-blue-700 uppercase tracking-wider border-l-2 border-blue-300 bg-blue-50/60">
+                    Entreprise / Prospects
+                  </th>
+                </tr>
                 <tr>
                   <th className="px-2 py-3 text-center font-medium text-gray-600 w-14" title="ID Serre — cliquer pour ouvrir la fiche serre">
                     ID
@@ -639,15 +648,16 @@ export default function Home() {
                       </>
                     );
 
-                    const rightCells = (m: SerreMatch | null, isFirst: boolean) => {
+                    const rightCells = (m: SerreMatch | null, isFirst: boolean, isExpandedRow: boolean) => {
                       const en = m?.siren ? enrichCache[m.siren] : null;
                       const isExcluded = m ? excludedMatches[`${s.id}_${m.siren}`] : false;
                       const statutColors: Record<string, string> = { nouveau: "bg-gray-100 text-gray-600", a_contacter: "bg-blue-100 text-blue-700", appele: "bg-yellow-100 text-yellow-700", interesse: "bg-green-100 text-green-700", pas_interesse: "bg-red-100 text-red-700", injoignable: "bg-orange-100 text-orange-700", client: "bg-purple-100 text-purple-700" };
                       const rowClass = isExcluded ? "line-through opacity-40" : "";
+                      const borderLClass = isExpandedRow ? "border-l-2 border-gray-200" : "border-l-2 border-blue-300";
                       return (
                         <>
                           {/* Entreprise */}
-                          <td className={`px-3 py-2 border-l-2 border-blue-300 bg-blue-50/10 ${rowClass}`}>
+                          <td className={`px-3 py-2 ${borderLClass} bg-blue-50/10 ${rowClass}`}>
                             {m ? (
                               <div className="flex items-center gap-1.5 text-xs">
                                 <span className="font-semibold text-blue-700 truncate max-w-[160px]" title={m.nom_entreprise || ""}>{m.nom_entreprise || "\u2014"}</span>
@@ -763,22 +773,34 @@ export default function Home() {
                       return [
                         <tr key={s.id} className="border-b border-gray-100 hover:bg-blue-50/30 transition">
                           {leftCells(1)}
-                          {rightCells(null, true)}
+                          {rightCells(null, true, false)}
                         </tr>
                       ];
                     }
 
-                    const rows = visibleMatches.map((m, idx) => (
-                      <tr key={`${s.id}_${idx}`} className={`hover:bg-blue-50/30 transition ${isExpanded && idx > 0 ? "bg-blue-50/40" : ""} ${idx === 0 ? "border-t border-gray-200" : ""} ${idx === rowSpan - 1 ? "border-b border-gray-200" : "border-b border-gray-100/50"}`}>
-                        {idx === 0 && leftCells(rowSpan + (isExpanded && nonExcludedCount < 3 ? 1 : 0))}
-                        {rightCells(m, idx === 0)}
-                      </tr>
-                    ));
+                    const expandedMulti = isExpanded && hasMultiple;
+
+                    const rows = visibleMatches.map((m, idx) => {
+                      const isFirstRow = idx === 0;
+                      const isLastRow = idx === visibleMatches.length - 1;
+                      // Bordures bleues top (premier) / bottom (dernier) quand déplié, sinon gris normal
+                      const topBorder = expandedMulti && isFirstRow ? "border-t-2 border-t-blue-400" : "border-t border-t-gray-100";
+                      const bottomBorder = expandedMulti && isLastRow ? "border-b-2 border-b-blue-400" : "border-b border-b-gray-100";
+                      // Lignes internes entre prospects identiques (gris normal)
+                      const internalBorder = expandedMulti && !isLastRow ? "border-b border-b-gray-200" : "";
+
+                      return (
+                        <tr key={`${s.id}_${idx}`} className={`hover:bg-blue-50/30 transition ${topBorder} ${internalBorder || bottomBorder}`}>
+                          {isFirstRow && leftCells(rowSpan + (expandedMulti && nonExcludedCount < 3 ? 1 : 0))}
+                          {rightCells(m, isFirstRow, expandedMulti)}
+                        </tr>
+                      );
+                    });
 
                     if (isExpanded && nonExcludedCount < 3) {
                       rows.push(
-                        <tr key={`${s.id}_add`} className="border-b border-gray-200 bg-blue-50/20">
-                          <td colSpan={7} className="px-3 py-1.5 text-center border-l-2 border-blue-300">
+                        <tr key={`${s.id}_add`} className="border-b-2 border-b-blue-400">
+                          <td colSpan={7} className="px-3 py-1.5 text-center border-l-2 border-gray-200">
                             <button
                               onClick={() => addMatchToSerre(s.id, Number(s.centroid_lat), Number(s.centroid_lon))}
                               className="text-[10px] text-blue-500 hover:text-blue-700 font-medium hover:underline"

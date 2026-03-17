@@ -27,21 +27,37 @@ export async function POST(request: NextRequest) {
 
   // Chercher l'entreprise agricole la plus proche non deja associee
   // Utilise Haversine en SQL pour calculer la distance
-  const candidates = await sql.unsafe(
-    `SELECT siren, siret_siege, nom, dirigeant_nom, dirigeant_prenom, commune,
-            (6371 * acos(LEAST(1.0,
-              cos(radians($1)) * cos(radians(latitude)) *
-              cos(radians(longitude) - radians($2)) +
-              sin(radians($1)) * sin(radians(latitude))
-            ))) as distance_km
-     FROM entreprises_agri
-     WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-       AND siren IS NOT NULL
-       ${existingSirens.length > 0 ? `AND siren NOT IN (${existingSirens.map((_: string, i: number) => `$${i + 3}`).join(",")})` : ""}
-     ORDER BY distance_km ASC
-     LIMIT 1`,
-    [lat, lon, ...existingSirens]
-  );
+  let candidates;
+  if (existingSirens.length > 0) {
+    candidates = await sql`
+      SELECT siren, siret_siege, nom, dirigeant_nom, dirigeant_prenom, commune,
+              (6371 * acos(LEAST(1.0,
+                cos(radians(${lat})) * cos(radians(latitude)) *
+                cos(radians(longitude) - radians(${lon})) +
+                sin(radians(${lat})) * sin(radians(latitude))
+              ))) as distance_km
+       FROM entreprises_agri
+       WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+         AND siren IS NOT NULL
+         AND siren != ALL(${existingSirens})
+       ORDER BY distance_km ASC
+       LIMIT 1
+    `;
+  } else {
+    candidates = await sql`
+      SELECT siren, siret_siege, nom, dirigeant_nom, dirigeant_prenom, commune,
+              (6371 * acos(LEAST(1.0,
+                cos(radians(${lat})) * cos(radians(latitude)) *
+                cos(radians(longitude) - radians(${lon})) +
+                sin(radians(${lat})) * sin(radians(latitude))
+              ))) as distance_km
+       FROM entreprises_agri
+       WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+         AND siren IS NOT NULL
+       ORDER BY distance_km ASC
+       LIMIT 1
+    `;
+  }
 
   if (candidates.length === 0) {
     return NextResponse.json({ error: "Aucune entreprise agricole supplementaire trouvee a proximite" }, { status: 404 });
