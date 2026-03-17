@@ -142,21 +142,6 @@ export default function FicheDetail({
               <option value="injoignable">Injoignable</option>
               <option value="client">Client</option>
             </select>
-            <div className="flex gap-1 ml-auto">
-              {[
-                { val: "confirme", icon: "\u2705", title: "Bon match" },
-                { val: "mauvais_match", icon: "\u274C", title: "Mauvais match" },
-              ].map(({ val, icon, title }) => (
-                <button
-                  key={val}
-                  onClick={() => onUpdateProspection("match_valide", val)}
-                  className={`w-7 h-7 rounded text-sm ${(prospection?.match_valide || "incertain") === val ? "ring-2 ring-blue-400 bg-blue-50" : "opacity-40 hover:opacity-100"}`}
-                  title={title}
-                >
-                  {icon}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 

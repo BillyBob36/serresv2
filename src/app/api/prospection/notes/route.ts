@@ -1,31 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 
-// GET: lire les notes d'une serre
+// GET: lire les notes d'un prospect (par siren)
 export async function GET(request: NextRequest) {
-  const serreId = request.nextUrl.searchParams.get("serre_id");
-  if (!serreId) {
+  const siren = request.nextUrl.searchParams.get("siren");
+  if (!siren) {
     return NextResponse.json({ data: [] });
   }
 
   const data = await sql`
-    SELECT n.id, n.serre_id, n.note, n.created_at, u.username
+    SELECT n.id, n.siren, n.note, n.created_at, u.username
     FROM prospection_notes n
     LEFT JOIN users u ON u.id = n.user_id
-    WHERE n.serre_id = ${Number(serreId)}
+    WHERE n.siren = ${siren}
     ORDER BY n.created_at DESC
   `;
 
   return NextResponse.json({ data });
 }
 
-// POST: ajouter une note
+// POST: ajouter une note à un prospect
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { serre_id, note } = body;
+  const { siren, note } = body;
 
-  if (!serre_id || !note) {
-    return NextResponse.json({ error: "serre_id et note requis" }, { status: 400 });
+  if (!siren || !note) {
+    return NextResponse.json({ error: "siren et note requis" }, { status: 400 });
   }
 
   // Récupérer user_id depuis le cookie
@@ -39,8 +39,8 @@ export async function POST(request: NextRequest) {
   }
 
   await sql`
-    INSERT INTO prospection_notes (serre_id, user_id, note)
-    VALUES (${serre_id}, ${userId}, ${note})
+    INSERT INTO prospection_notes (siren, user_id, note)
+    VALUES (${siren}, ${userId}, ${note})
   `;
 
   return NextResponse.json({ ok: true });

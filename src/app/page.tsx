@@ -31,7 +31,7 @@ export default function Home() {
 
   // Prospection state (keyed by serre_id)
   const [prospections, setProspections] = useState<Record<number, { statut: string; match_valide: string }>>({});
-  const [notes, setNotes] = useState<Record<number, { id: number; note: string; created_at: string; username?: string }[]>>({});
+  const [notes, setNotes] = useState<Record<string, { id: number; note: string; created_at: string; username?: string }[]>>({});
 
   // Enrichissement cache (keyed by siren)
   const [enrichCache, setEnrichCache] = useState<Record<string, any>>({});
@@ -127,25 +127,26 @@ export default function Home() {
     }
   };
 
-  const fetchNotes = async (serreId: number) => {
+  const fetchNotes = async (siren: string) => {
+    if (!siren) return;
     try {
-      const resp = await fetch(`${API}/api/prospection/notes?serre_id=${serreId}`);
+      const resp = await fetch(`${API}/api/prospection/notes?siren=${siren}`);
       const json = await resp.json();
-      setNotes((prev) => ({ ...prev, [serreId]: json.data || [] }));
+      setNotes((prev) => ({ ...prev, [siren]: json.data || [] }));
     } catch (err) {
       console.error("Erreur notes:", err);
     }
   };
 
-  const addNote = async (serreId: number, text: string) => {
-    if (!text.trim()) return;
+  const addNote = async (siren: string, text: string) => {
+    if (!text.trim() || !siren) return;
     try {
       await fetch(`${API}/api/prospection/notes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serre_id: serreId, note: text.trim() }),
+        body: JSON.stringify({ siren, note: text.trim() }),
       });
-      fetchNotes(serreId);
+      fetchNotes(siren);
     } catch (err) {
       console.error("Erreur ajout note:", err);
     }
@@ -737,7 +738,7 @@ export default function Home() {
                                   if (!enrichCache[m.siren]) {
                                     enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon));
                                   }
-                                  fetchNotes(s.id);
+                                  fetchNotes(m.siren);
                                 }}
                                 className="px-2 py-1 rounded text-[10px] font-medium bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 transition"
                                 title="Ouvrir la fiche detail"
@@ -809,7 +810,7 @@ export default function Home() {
             if (match.siren && !enrichCache[match.siren]) {
               enrichir(match.siren, match.nom_entreprise || "", Number(serre.centroid_lat), Number(serre.centroid_lon));
             }
-            fetchNotes(serre.id);
+            fetchNotes(match.siren);
           }}
           excludedMatches={excludedMatches}
         />
@@ -830,8 +831,8 @@ export default function Home() {
           enrichLoading={enrichLoading === ficheOpen.match?.siren}
           prospection={prospections[ficheOpen.serre.id] || null}
           onUpdateProspection={(field, value) => updateProspection(ficheOpen.serre.id, field, value)}
-          notes={notes[ficheOpen.serre.id] || []}
-          onAddNote={(text) => addNote(ficheOpen.serre.id, text)}
+          notes={ficheOpen.match?.siren ? (notes[ficheOpen.match.siren] || []) : []}
+          onAddNote={(text) => ficheOpen.match?.siren && addNote(ficheOpen.match.siren, text)}
         />
       )}
     </div>
