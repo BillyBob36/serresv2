@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || "";
+const INSEE_SIRENE_API_KEY = process.env.INSEE_SIRENE_API_KEY || "";
+const INSEE_SIRENE_BASE = "https://api.insee.fr/api-sirene/3.11";
 
 // =============================================
 // Table de correspondance des natures juridiques INSEE
@@ -146,11 +148,13 @@ export async function POST(request: NextRequest) {
   }
 
   let gouvData: any = {};
+  let inseeData: any = {};
   let googleData: any = {};
   let bodaccData: any = {};
   const sources: string[] = [];
 
   let gouvError = "";
+  let inseeError = "";
   let googleError = "";
   let bodaccError = "";
 
@@ -267,6 +271,77 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     gouvError = String(err);
     console.error("[GOUV] Erreur:", err);
+  }
+
+  // ======================================================
+  // ETAPE 1b : API INSEE Sirene (GRATUIT avec cle API)
+  // Donnees officielles detaillees + historique des periodes
+  // https://api.insee.fr/api-sirene/3.11
+  // ======================================================
+  if (INSEE_SIRENE_API_KEY) {
+    try {
+      const inseeResp = await fetch(
+        `${INSEE_SIRENE_BASE}/siren/${siren}`,
+        {
+          headers: { "Authorization": `Bearer ${INSEE_SIRENE_API_KEY}`, "Accept": "application/json" },
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+      if (inseeResp.ok) {
+        const inseeJson = await inseeResp.json();
+        const ul = inseeJson.uniteLegale;
+        if (ul) {
+          const periode = ul.periodesUniteLegale?.[0];
+
+          // Historique complet des periodes
+          const periodesHistorique = ul.periodesUniteLegale?.map((p: any) => ({
+            date_debut: p.dateDebut,
+            date_fin: p.dateFin,
+            etat: p.etatAdministratifUniteLegale,
+            denomination: p.denominationUniteLegale,
+            categorie_juridique: p.categorieJuridiqueUniteLegale,
+            activite_principale: p.activitePrincipaleUniteLegale,
+            nomenclature: p.nomenclatureActivitePrincipaleUniteLegale,
+            nic_siege: p.nicSiegeUniteLegale,
+            ess: p.economieSocialeSolidaireUniteLegale,
+            societe_mission: p.societeMissionUniteLegale,
+            caractere_employeur: p.caractereEmployeurUniteLegale,
+          })) || null;
+
+          inseeData = {
+            date_dernier_traitement: ul.dateDernierTraitementUniteLegale || null,
+            nombre_periodes: ul.nombrePeriodesUniteLegale || null,
+            activite_principale_naf25_insee: ul.activitePrincipaleNAF25UniteLegale || null,
+            periodes_historique: periodesHistorique,
+            // Completer les champs manquants de gouvData
+            ...((!gouvData.tranche_effectifs && ul.trancheEffectifsUniteLegale && ul.trancheEffectifsUniteLegale !== "NN")
+              ? { tranche_effectifs_insee: TRANCHES_EFFECTIFS[ul.trancheEffectifsUniteLegale] || ul.trancheEffectifsUniteLegale } : {}),
+            ...((!gouvData.categorie_entreprise && ul.categorieEntreprise)
+              ? { categorie_entreprise_insee: ul.categorieEntreprise } : {}),
+          };
+
+          sources.push("insee");
+          console.log(`[INSEE] OK siren=${siren}: ${ul.denominationUniteLegale || periode?.denominationUniteLegale}, ${periodesHistorique?.length || 0} periodes, NAF25=${ul.activitePrincipaleNAF25UniteLegale || "-"}`);
+        } else {
+          inseeError = "Pas d'unite legale dans la reponse";
+          console.warn(`[INSEE] Reponse sans uniteLegale pour siren=${siren}`);
+        }
+      } else if (inseeResp.status === 404) {
+        inseeError = "SIREN non trouve";
+        console.log(`[INSEE] 404 pour siren=${siren}`);
+      } else if (inseeResp.status === 429) {
+        inseeError = "Quota INSEE depasse";
+        console.warn(`[INSEE] 429 rate limit pour siren=${siren}`);
+      } else {
+        inseeError = `HTTP ${inseeResp.status}`;
+        console.error(`[INSEE] ${inseeResp.status} pour siren=${siren}`);
+      }
+    } catch (err) {
+      inseeError = String(err);
+      console.error("[INSEE] Erreur:", err);
+    }
+  } else {
+    console.log(`[INSEE] SAUTE: cle API INSEE_SIRENE_API_KEY non configuree`);
   }
 
   // ======================================================
@@ -461,6 +536,7 @@ export async function POST(request: NextRequest) {
   if (sources.length === 0) {
     const details = [
       `Gouv: ${gouvError || "echec"}`,
+      `INSEE: ${inseeError || "echec"}`,
       `BODACC: ${bodaccError || "aucune donnee"}`,
       `Google: ${googleError || "echec"}`,
     ].join(" | ");
@@ -482,14 +558,16 @@ export async function POST(request: NextRequest) {
     adresse: !!gouvData.adresse_siege,
     forme_juridique: !!gouvData.forme_juridique,
     bodacc: !!(bodaccData.bodacc_procedures || bodaccData.bodacc_depots_comptes),
+    insee_historique: !!inseeData.periodes_historique,
     google_places: !!googleData.google_place_id,
   };
   const champsRemplis = Object.values(synthese).filter(Boolean).length;
   const champsTotal = Object.keys(synthese).length;
   console.log(`[SYNTHESE] siren=${siren}: ${champsRemplis}/${champsTotal} champs remplis — ${JSON.stringify(synthese)}`);
+  if (inseeError) console.warn(`[SYNTHESE] INSEE: ${inseeError}`);
   if (googleError) console.warn(`[SYNTHESE] Google: ${googleError}`);
 
-  // Fusion : gouvData (base) → BODACC (juridique) → Google (contact)
+  // Fusion : gouvData (base) → INSEE (historique) → BODACC (juridique) → Google (contact)
   const record: any = {
     siren,
     // Champs existants
@@ -548,6 +626,10 @@ export async function POST(request: NextRequest) {
     google_maps_uri: googleData.google_maps_uri || null,
     google_types: googleData.google_types || null,
     google_primary_type: googleData.google_primary_type || null,
+    // INSEE Sirene
+    insee_periodes_historique: inseeData.periodes_historique || null,
+    insee_date_dernier_traitement: inseeData.date_dernier_traitement || null,
+    insee_nombre_periodes: inseeData.nombre_periodes || null,
     // BODACC
     bodacc_procedures: bodaccData.bodacc_procedures || null,
     bodacc_depots_comptes: bodaccData.bodacc_depots_comptes || null,
@@ -568,6 +650,7 @@ export async function POST(request: NextRequest) {
       convention_collective_renseignee, liste_idcc, complements,
       dirigeants_complet, finances_historique,
       google_business_status, google_formatted_address, google_maps_uri, google_types, google_primary_type,
+      insee_periodes_historique, insee_date_dernier_traitement, insee_nombre_periodes,
       bodacc_procedures, bodacc_depots_comptes, bodacc_derniere_modification
     ) VALUES (
       ${record.siren}, ${record.forme_juridique}, ${record.date_creation}, ${record.tranche_effectifs},
@@ -588,6 +671,8 @@ export async function POST(request: NextRequest) {
       ${record.google_business_status}, ${record.google_formatted_address}, ${record.google_maps_uri},
       ${record.google_types ? JSON.stringify(record.google_types) : null},
       ${record.google_primary_type},
+      ${record.insee_periodes_historique ? JSON.stringify(record.insee_periodes_historique) : null},
+      ${record.insee_date_dernier_traitement}, ${record.insee_nombre_periodes},
       ${record.bodacc_procedures ? JSON.stringify(record.bodacc_procedures) : null},
       ${record.bodacc_depots_comptes ? JSON.stringify(record.bodacc_depots_comptes) : null},
       ${record.bodacc_derniere_modification ? JSON.stringify(record.bodacc_derniere_modification) : null}
@@ -643,6 +728,9 @@ export async function POST(request: NextRequest) {
       google_maps_uri = EXCLUDED.google_maps_uri,
       google_types = EXCLUDED.google_types,
       google_primary_type = EXCLUDED.google_primary_type,
+      insee_periodes_historique = EXCLUDED.insee_periodes_historique,
+      insee_date_dernier_traitement = EXCLUDED.insee_date_dernier_traitement,
+      insee_nombre_periodes = EXCLUDED.insee_nombre_periodes,
       bodacc_procedures = EXCLUDED.bodacc_procedures,
       bodacc_depots_comptes = EXCLUDED.bodacc_depots_comptes,
       bodacc_derniere_modification = EXCLUDED.bodacc_derniere_modification
@@ -662,6 +750,7 @@ export async function POST(request: NextRequest) {
       sources,
       erreurs: {
         ...(gouvError ? { gouv: gouvError } : {}),
+        ...(inseeError ? { insee: inseeError } : {}),
         ...(googleError ? { google: googleError } : {}),
         ...(bodaccError ? { bodacc: bodaccError } : {}),
       },
