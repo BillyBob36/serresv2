@@ -167,23 +167,6 @@ export default function Home() {
     }
   };
 
-  const addMatchToSerre = async (serreId: number, centroidLat: number, centroidLon: number) => {
-    try {
-      const resp = await fetch(`${API}/api/serres/add-match`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serre_id: serreId, lat: centroidLat, lon: centroidLon }),
-      });
-      if (resp.ok) {
-        fetchData();
-      } else {
-        const json = await resp.json().catch(() => ({}));
-        alert(json.error || "Impossible d'ajouter un prospect");
-      }
-    } catch (err) {
-      console.error("Erreur ajout prospect:", err);
-    }
-  };
 
   const [quotaMessage, setQuotaMessage] = useState<string | null>(null);
 
@@ -767,7 +750,6 @@ export default function Home() {
                       );
                     };
 
-                    const nonExcludedCount = matches.filter((m) => !excludedMatches[`${s.id}_${m.siren}`]).length;
 
                     if (visibleMatches.length === 0) {
                       return [
@@ -791,26 +773,12 @@ export default function Home() {
 
                       return (
                         <tr key={`${s.id}_${idx}`} className={`hover:bg-blue-50/30 transition ${topBorder} ${internalBorder || bottomBorder}`}>
-                          {isFirstRow && leftCells(rowSpan + (expandedMulti && nonExcludedCount < 3 ? 1 : 0))}
+                          {isFirstRow && leftCells(rowSpan)}
                           {rightCells(m, isFirstRow, expandedMulti)}
                         </tr>
                       );
                     });
 
-                    if (isExpanded && nonExcludedCount < 3) {
-                      rows.push(
-                        <tr key={`${s.id}_add`} className="border-b-2 border-b-blue-400">
-                          <td colSpan={7} className="px-3 py-1.5 text-center border-l-2 border-gray-200">
-                            <button
-                              onClick={() => addMatchToSerre(s.id, Number(s.centroid_lat), Number(s.centroid_lon))}
-                              className="text-[10px] text-blue-500 hover:text-blue-700 font-medium hover:underline"
-                            >
-                              + Ajouter un prospect
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    }
 
                     return rows;
                   })
