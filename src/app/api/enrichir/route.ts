@@ -602,8 +602,20 @@ export async function POST(request: NextRequest) {
           }
         } else {
           const errBody = await apifyResp.text().catch(() => "");
-          apifyError = `HTTP ${apifyResp.status}: ${errBody.slice(0, 200)}`;
-          console.error(`[APIFY] ${apifyResp.status} pour siren=${siren}`);
+          // Parser les erreurs Apify specifiques
+          try {
+            const errJson = JSON.parse(errBody);
+            if (errJson?.error?.type === "actor-is-not-rented") {
+              apifyError = "Acteur Apify non loue. Louez-le sur https://console.apify.com/actors/tRDrNzskGqoxT0EpH";
+              console.error(`[APIFY] ACTOR NON LOUE — Allez sur https://console.apify.com/actors/tRDrNzskGqoxT0EpH pour louer l'acteur`);
+            } else {
+              apifyError = `HTTP ${apifyResp.status}: ${errJson?.error?.message || errBody.slice(0, 200)}`;
+              console.error(`[APIFY] ${apifyResp.status} pour siren=${siren}: ${errJson?.error?.message || errBody.slice(0, 200)}`);
+            }
+          } catch {
+            apifyError = `HTTP ${apifyResp.status}: ${errBody.slice(0, 200)}`;
+            console.error(`[APIFY] ${apifyResp.status} pour siren=${siren}: ${errBody.slice(0, 200)}`);
+          }
         }
       } catch (err) {
         apifyError = String(err);
@@ -634,6 +646,25 @@ export async function POST(request: NextRequest) {
       { status: isQuotaError ? 429 : 422 }
     );
   }
+
+  // Log de synthese enrichissement
+  const synthese = {
+    dirigeants: !!(gouvData.dirigeants_complet?.length || gouvData.dirigeants?.length),
+    telephone: !!(googleData.telephone || apifyData.telephone),
+    site_web: !!googleData.site_web,
+    email: !!apifyData.email,
+    chiffre_affaires: !!(gouvData.chiffre_affaires || apifyData.chiffre_affaires),
+    resultat_net: !!(gouvData.resultat_net || apifyData.resultat_net),
+    adresse: !!gouvData.adresse_siege,
+    forme_juridique: !!gouvData.forme_juridique,
+    bodacc: !!(bodaccData.bodacc_procedures || bodaccData.bodacc_depots_comptes),
+    google_places: !!googleData.google_place_id,
+  };
+  const champsRemplis = Object.values(synthese).filter(Boolean).length;
+  const champsTotal = Object.keys(synthese).length;
+  console.log(`[SYNTHESE] siren=${siren}: ${champsRemplis}/${champsTotal} champs remplis — ${JSON.stringify(synthese)}`);
+  if (apifyError) console.warn(`[SYNTHESE] Apify: ${apifyError}`);
+  if (googleError) console.warn(`[SYNTHESE] Google: ${googleError}`);
 
   // Fusion : gouvData (base) → BODACC (juridique) → Google (contact) → Apify (champs manquants)
   const record: any = {
@@ -798,7 +829,22 @@ export async function POST(request: NextRequest) {
     SELECT * FROM enrichissement_entreprise WHERE siren = ${siren}
   `;
 
-  return NextResponse.json({ data: saved[0] || record, cached: false });
+  return NextResponse.json({
+    data: saved[0] || record,
+    cached: false,
+    enrichissement: {
+      synthese,
+      champs_remplis: champsRemplis,
+      champs_total: champsTotal,
+      sources,
+      erreurs: {
+        ...(gouvError ? { gouv: gouvError } : {}),
+        ...(googleError ? { google: googleError } : {}),
+        ...(bodaccError ? { bodacc: bodaccError } : {}),
+        ...(apifyError ? { apify: apifyError } : {}),
+      },
+    },
+  });
 }
 
 // ======================================================
