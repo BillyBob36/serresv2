@@ -171,8 +171,8 @@ export default function Home() {
 
   const [quotaMessage, setQuotaMessage] = useState<string | null>(null);
 
-  const enrichir = async (siren: string, nom: string, lat: number, lon: number, autoOpen?: { serre: Serre; match: SerreMatch }) => {
-    if (enrichCache[siren]) {
+  const enrichir = async (siren: string, nom: string, lat: number, lon: number, autoOpen?: { serre: Serre; match: SerreMatch }, force?: boolean) => {
+    if (!force && enrichCache[siren]) {
       if (autoOpen) setFicheOpen(autoOpen);
       return;
     }
@@ -181,7 +181,7 @@ export default function Home() {
       const resp = await fetch(`${API}/api/enrichir`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ siren, nom_entreprise: nom, lat, lon }),
+        body: JSON.stringify({ siren, nom_entreprise: nom, lat, lon, force: !!force }),
       });
       const json = await resp.json();
       if (!resp.ok) {
@@ -825,7 +825,7 @@ export default function Home() {
           onClose={() => setFicheOpen(null)}
           onEnrichir={() => {
             if (ficheOpen.match?.siren) {
-              enrichir(ficheOpen.match.siren, ficheOpen.match.nom_entreprise || "", Number(ficheOpen.serre.centroid_lat), Number(ficheOpen.serre.centroid_lon));
+              enrichir(ficheOpen.match.siren, ficheOpen.match.nom_entreprise || "", Number(ficheOpen.serre.centroid_lat), Number(ficheOpen.serre.centroid_lon), undefined, true);
             }
           }}
           enrichLoading={enrichLoading === ficheOpen.match?.siren}

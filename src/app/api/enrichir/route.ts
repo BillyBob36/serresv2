@@ -146,19 +146,22 @@ function formatUsageMessage(apiName: string, appels: number, limite: number): st
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { siren, nom_entreprise, lat, lon } = body;
+  const { siren, nom_entreprise, lat, lon, force } = body;
 
   if (!siren) {
     return NextResponse.json({ error: "siren requis" }, { status: 400 });
   }
 
-  // Verifier si deja enrichi en BDD
-  const existing = await sql`
-    SELECT * FROM enrichissement_entreprise WHERE siren = ${siren}
-  `;
-
-  if (existing.length > 0) {
-    return NextResponse.json({ data: existing[0], cached: true });
+  // Verifier si deja enrichi en BDD (sauf si force=true)
+  if (!force) {
+    const existing = await sql`
+      SELECT * FROM enrichissement_entreprise WHERE siren = ${siren}
+    `;
+    if (existing.length > 0) {
+      return NextResponse.json({ data: existing[0], cached: true });
+    }
+  } else {
+    console.log(`[FORCE] Re-enrichissement force pour siren=${siren}`);
   }
 
   // Recuperer user_id depuis le cookie
@@ -376,7 +379,8 @@ export async function POST(request: NextRequest) {
   // + businessStatus, formattedAddress, googleMapsUri, types
   // (inclus sans surcout dans le tier Enterprise)
   // ======================================================
-  if (GOOGLE_PLACES_API_KEY && nom_entreprise) {
+  const nomPourGoogle = gouvData.nom_complet || nom_entreprise;
+  if (GOOGLE_PLACES_API_KEY && nomPourGoogle) {
     const googleUsage = await getApiUsage("google_places");
     if (googleUsage.appels >= googleUsage.limite) {
       googleError = formatUsageMessage("google_places", googleUsage.appels, googleUsage.limite);
@@ -385,7 +389,7 @@ export async function POST(request: NextRequest) {
       try {
         // A2: Ajouter la commune au textQuery pour desambiguiser
         const communeSiege = gouvData.libelle_commune_siege || "";
-        const textQuery = communeSiege ? `${nom_entreprise} ${communeSiege}` : nom_entreprise;
+        const textQuery = communeSiege ? `${nomPourGoogle} ${communeSiege}` : nomPourGoogle;
         const searchBody: any = { textQuery };
 
         // A1: Utiliser les coordonnees du siege (API Gouv) au lieu du centroide serre
@@ -432,7 +436,7 @@ export async function POST(request: NextRequest) {
           if (place) {
             // A3: Valider que le resultat Google correspond bien a l'entreprise
             const placeName = (place.displayName?.text || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            const expectedName = (nom_entreprise || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            const expectedName = (nomPourGoogle || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
             const placeTokens = placeName.split(/\s+/).filter((t: string) => t.length > 2);
             const expectedTokens = expectedName.split(/\s+/).filter((t: string) => t.length > 2);
             const commonTokens = placeTokens.filter((t: string) => expectedTokens.some((e: string) => e.includes(t) || t.includes(e)));
@@ -453,10 +457,10 @@ export async function POST(request: NextRequest) {
                 google_primary_type: place.primaryTypeDisplayName?.text || place.primaryType || null,
               };
               sources.push("google");
-              console.log(`[GOOGLE] OK pour "${nom_entreprise}": ${place.displayName?.text} (sim=${similarity.toFixed(2)}), status=${place.businessStatus}`);
+              console.log(`[GOOGLE] OK pour "${nomPourGoogle}": ${place.displayName?.text} (sim=${similarity.toFixed(2)}), status=${place.businessStatus}`);
             } else {
-              googleError = `Resultat Google rejete: "${place.displayName?.text}" ne correspond pas a "${nom_entreprise}" (sim=${similarity.toFixed(2)})`;
-              console.warn(`[GOOGLE] REJETE pour "${nom_entreprise}": place="${place.displayName?.text}", sim=${similarity.toFixed(2)}`);
+              googleError = `Resultat Google rejete: "${place.displayName?.text}" ne correspond pas a "${nomPourGoogle}" (sim=${similarity.toFixed(2)})`;
+              console.warn(`[GOOGLE] REJETE pour "${nomPourGoogle}": place="${place.displayName?.text}", sim=${similarity.toFixed(2)}`);
             }
           } else {
             googleError = "Aucun resultat trouve";
@@ -468,7 +472,7 @@ export async function POST(request: NextRequest) {
           } else {
             googleError = `HTTP ${findResp.status}: ${errBody.slice(0, 200)}`;
           }
-          console.error(`[GOOGLE] ${findResp.status} pour "${nom_entreprise}"`);
+          console.error(`[GOOGLE] ${findResp.status} pour "${nomPourGoogle}"`);
         }
       } catch (err) {
         googleError = String(err);
@@ -477,8 +481,10 @@ export async function POST(request: NextRequest) {
     }
   } else if (!GOOGLE_PLACES_API_KEY) {
     googleError = "Cle API manquante";
+    console.warn(`[GOOGLE] SAUTE: cle API Google Places manquante`);
   } else {
     googleError = "Pas de nom entreprise";
+    console.warn(`[GOOGLE] SAUTE: pas de nom entreprise (nom_entreprise="${nom_entreprise}", gouvData.nom_complet="${gouvData.nom_complet}")`);
   }
 
   // ======================================================
@@ -606,6 +612,7 @@ export async function POST(request: NextRequest) {
     }
   } else if (besoinApify && !APIFY_API_KEY) {
     apifyError = "Cle API Apify manquante";
+    console.warn(`[APIFY] SAUTE: variable APIFY_API_KEY non configuree dans l'environnement`);
   } else if (!besoinApify) {
     console.log(`[APIFY] Non appele — tous les champs deja remplis`);
   }
