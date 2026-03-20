@@ -122,16 +122,17 @@ export default function Parametres() {
     }
   }, []);
 
-  const fetchBatchDetail = useCallback(async (id: number) => {
-    setBatchLoading(true);
+  const fetchBatchDetail = useCallback(async (id: number, silent = false) => {
+    if (!silent) setBatchLoading(true);
     try {
       const resp = await fetch(`${API}/api/batch/${id}`);
+      if (!resp.ok) return;
       const json = await resp.json();
       setSelectedBatch(json.data || null);
     } catch (err) {
       console.error("Erreur batch detail:", err);
     } finally {
-      setBatchLoading(false);
+      if (!silent) setBatchLoading(false);
     }
   }, []);
 
@@ -159,8 +160,8 @@ export default function Parametres() {
       });
       const json = await resp.json();
       if (!resp.ok) { setError(json.error || "Erreur"); return; }
-      // Start polling
-      setTimeout(() => fetchBatchDetail(batchId), 2000);
+      // Start polling (silent)
+      setTimeout(() => fetchBatchDetail(batchId, true), 2000);
     } catch { setError("Erreur reseau"); }
   };
 
@@ -183,7 +184,7 @@ export default function Parametres() {
     if (!selectedBatch) return;
     const hasRunning = selectedBatch.apis?.some((a) => a.statut === "running");
     if (!hasRunning) return;
-    const interval = setInterval(() => fetchBatchDetail(selectedBatch.id), 5000);
+    const interval = setInterval(() => fetchBatchDetail(selectedBatch.id, true), 5000);
     return () => clearInterval(interval);
   }, [selectedBatch, fetchBatchDetail]);
 
@@ -368,12 +369,10 @@ export default function Parametres() {
                   </button>
                 </div>
 
-                {batchLoading && (
-                  <div className="flex items-center gap-2 mb-4">
-                    <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                    <span className="text-xs text-blue-600">Chargement...</span>
-                  </div>
-                )}
+                <div className={`flex items-center gap-2 mb-4 transition-opacity ${batchLoading ? 'opacity-100' : 'opacity-0'}`}>
+                  <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-xs text-blue-600">Chargement...</span>
+                </div>
 
                 <div className="space-y-3">
                   {(selectedBatch.apis || []).map((api) => {
