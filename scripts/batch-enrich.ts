@@ -675,7 +675,7 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
   async function insertMatch(matchedSiren: string, item: any) {
     const itemSiret = (item.siret || "").replace(/\s/g, "");
     const siteWeb = item.external_links?.[0]?.site_externe || null;
-    const telephone = Array.isArray(item.tel) ? item.tel : (item.tel ? [item.tel] : []);
+    const telephone: string[] = Array.isArray(item.tel) ? item.tel.map(String) : (item.tel ? [String(item.tel)] : []);
     await sql`
       INSERT INTO data_pages_jaunes (
         batch_id, siren, pj_id, raison_social, description,
@@ -685,7 +685,7 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
       ) VALUES (
         ${batchId}, ${matchedSiren}, ${item.id || null}, ${item.raison_social || null},
         ${item.description || null}, ${item.adresse || null}, ${item.postal_code || null},
-        ${item.city || null}, ${telephone.length > 0 ? sql.json(telephone) : null},
+        ${item.city || null}, ${telephone.length > 0 ? sql.array(telephone) : null},
         ${itemSiret || null}, ${item.NAF || null},
         ${item.forme_juridique || null}, ${item.creation_date || null},
         ${item.activite || null},
