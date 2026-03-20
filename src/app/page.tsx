@@ -33,6 +33,11 @@ export default function Home() {
   const [prospections, setProspections] = useState<Record<number, { statut: string; match_valide: string }>>({});
   const [notes, setNotes] = useState<Record<string, { id: number; note: string; created_at: string; username?: string }[]>>({});
 
+  // View mode: realtime (enrichir on click) vs stored (from batch)
+  const [viewMode, setViewMode] = useState<"realtime" | "stored">("realtime");
+  const [batchList, setBatchList] = useState<{ id: number; nom: string; created_at: string }[]>([]);
+  const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
+
   // Enrichissement cache (keyed by siren)
   const [enrichCache, setEnrichCache] = useState<Record<string, any>>({});
   const [enrichLoading, setEnrichLoading] = useState<string | null>(null);
@@ -203,13 +208,45 @@ export default function Home() {
     }
   };
 
+  // Fetch batch list for the dropdown
+  const fetchBatchList = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API}/api/batch`);
+      const json = await resp.json();
+      const list = (json.data || []).filter((b: any) =>
+        (b.apis || []).some((a: any) => a.statut === "done")
+      );
+      setBatchList(list);
+      if (list.length > 0 && !selectedBatchId) {
+        setSelectedBatchId(list[0].id);
+      }
+    } catch (err) {
+      console.error("Erreur fetch batches:", err);
+    }
+  }, [selectedBatchId]);
+
+  // Fetch batch data when in stored mode
+  const fetchBatchData = useCallback(async (batchId: number, sirens: string[]) => {
+    if (sirens.length === 0) return;
+    try {
+      const resp = await fetch(`${API}/api/batch/${batchId}/data?sirens=${sirens.join(",")}`);
+      const json = await resp.json();
+      if (json.data) {
+        setEnrichCache((prev) => ({ ...prev, ...json.data }));
+      }
+    } catch (err) {
+      console.error("Batch data fetch error:", err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
   useEffect(() => {
     fetchStats();
-  }, [fetchStats]);
+    fetchBatchList();
+  }, [fetchStats, fetchBatchList]);
 
   // Charger les prospections + enrichissements quand les données changent
   useEffect(() => {
@@ -229,9 +266,13 @@ export default function Home() {
         }
       }
       setExcludedMatches((prev) => ({ ...prev, ...excluded }));
-      // Batch fetch enrichissement data from DB
       const uniqueSirens = [...new Set(sirensToFetch)];
-      if (uniqueSirens.length > 0) {
+
+      if (viewMode === "stored" && selectedBatchId && uniqueSirens.length > 0) {
+        // Fetch from batch data
+        fetchBatchData(selectedBatchId, uniqueSirens);
+      } else if (viewMode === "realtime" && uniqueSirens.length > 0) {
+        // Fetch from enrichissement_entreprise
         fetch(`${API}/api/enrichir/batch`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -246,7 +287,12 @@ export default function Home() {
           .catch((err) => console.error("Batch enrich fetch error:", err));
       }
     }
-  }, [data, fetchProspections]);
+  }, [data, fetchProspections, viewMode, selectedBatchId, fetchBatchData]);
+
+  // Reload enrichCache when switching mode or batch
+  useEffect(() => {
+    setEnrichCache({});
+  }, [viewMode, selectedBatchId]);
 
   const handleSort = (col: string) => {
     if (sortBy === col) {
@@ -504,6 +550,42 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Switch mode affichage */}
+        <div className="flex items-center gap-4 mb-3 bg-white rounded-xl border border-gray-200 p-3">
+          <div className="flex gap-1 bg-gray-100 rounded-lg p-0.5">
+            <button
+              onClick={() => setViewMode("realtime")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "realtime" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+            >
+              RealTime
+            </button>
+            <button
+              onClick={() => { setViewMode("stored"); fetchBatchList(); }}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "stored" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+            >
+              BDD Stockee
+            </button>
+          </div>
+          {viewMode === "stored" && (
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-500">Enrichissement :</label>
+              <select
+                value={selectedBatchId || ""}
+                onChange={(e) => setSelectedBatchId(Number(e.target.value) || null)}
+                className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs text-gray-900 bg-white"
+              >
+                {batchList.length === 0 && <option value="">Aucun disponible</option>}
+                {batchList.map((b) => (
+                  <option key={b.id} value={b.id}>{b.nom}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {viewMode === "stored" && (
+            <span className="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded">Donnees pre-enrichies — pas de bouton Enrichir</span>
+          )}
+        </div>
+
         {/* Compteur résultats */}
         <div className="flex justify-between items-center mb-3">
           <p className="text-sm text-gray-500">
@@ -689,7 +771,7 @@ export default function Home() {
                                       </span>
                                     )}
                                   </>
-                                ) : (
+                                ) : viewMode === "realtime" ? (
                                   <button
                                     onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon), { serre: s, match: m })}
                                     disabled={enrichLoading === m.siren}
@@ -697,6 +779,8 @@ export default function Home() {
                                   >
                                     {enrichLoading === m.siren ? "..." : "Enrichir"}
                                   </button>
+                                ) : (
+                                  <span className="text-gray-300 text-[10px]">{"\u2014"}</span>
                                 )}
                               </div>
                             ) : <span className="text-gray-200 text-[10px]">{"\u2014"}</span>}

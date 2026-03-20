@@ -39,7 +39,32 @@ interface UpdateStatus {
   last_log: string;
 }
 
+interface BatchData {
+  id: number;
+  nom: string;
+  created_at: string;
+  apis: {
+    api_name: string;
+    statut: string;
+    nb_total: number;
+    nb_enrichis: number;
+    nb_erreurs: number;
+    started_at: string | null;
+    completed_at: string | null;
+    data_count?: number;
+  }[];
+}
+
+const API_LABELS: Record<string, { label: string; icon: string; color: string }> = {
+  api_gouv: { label: "API Gouv", icon: "\uD83C\uDFDB\uFE0F", color: "blue" },
+  insee: { label: "INSEE Sirene", icon: "\uD83D\uDCCA", color: "indigo" },
+  google_places: { label: "Google Places", icon: "\uD83D\uDCCD", color: "red" },
+  bodacc: { label: "BODACC", icon: "\u2696\uFE0F", color: "amber" },
+  pages_jaunes: { label: "Pages Jaunes", icon: "\uD83D\uDCD2", color: "yellow" },
+};
+
 export default function Parametres() {
+  const [activeTab, setActiveTab] = useState<"donnees" | "enrichissement">("donnees");
   const [freshness, setFreshness] = useState<FreshnessData | null>(null);
   const [loading, setLoading] = useState(true);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
@@ -50,6 +75,12 @@ export default function Parametres() {
   const [bdnbDistance, setBdnbDistance] = useState(200);
   const [bdnbRematching, setBdnbRematching] = useState(false);
   const [bdnbResult, setBdnbResult] = useState<string | null>(null);
+
+  // Batch enrichissement state
+  const [batches, setBatches] = useState<BatchData[]>([]);
+  const [selectedBatch, setSelectedBatch] = useState<BatchData | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [creatingBatch, setCreatingBatch] = useState(false);
 
   const fetchFreshness = useCallback(async () => {
     try {
@@ -81,9 +112,80 @@ export default function Parametres() {
     }
   }, [updating, fetchFreshness]);
 
+  const fetchBatches = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API}/api/batch`);
+      const json = await resp.json();
+      setBatches(json.data || []);
+    } catch (err) {
+      console.error("Erreur batches:", err);
+    }
+  }, []);
+
+  const fetchBatchDetail = useCallback(async (id: number) => {
+    setBatchLoading(true);
+    try {
+      const resp = await fetch(`${API}/api/batch/${id}`);
+      const json = await resp.json();
+      setSelectedBatch(json.data || null);
+    } catch (err) {
+      console.error("Erreur batch detail:", err);
+    } finally {
+      setBatchLoading(false);
+    }
+  }, []);
+
+  const createBatch = async () => {
+    setCreatingBatch(true);
+    setError(null);
+    try {
+      const resp = await fetch(`${API}/api/batch`, { method: "POST" });
+      const json = await resp.json();
+      if (!resp.ok) { setError(json.error || "Erreur"); return; }
+      await fetchBatches();
+      setSelectedBatch(null);
+      fetchBatchDetail(json.data.id);
+    } catch { setError("Erreur reseau"); }
+    finally { setCreatingBatch(false); }
+  };
+
+  const triggerEnrich = async (batchId: number, apiName: string) => {
+    setError(null);
+    try {
+      const resp = await fetch(`${API}/api/batch/${batchId}/enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_name: apiName }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) { setError(json.error || "Erreur"); return; }
+      // Start polling
+      setTimeout(() => fetchBatchDetail(batchId), 2000);
+    } catch { setError("Erreur reseau"); }
+  };
+
+  const deleteBatch = async (batchId: number) => {
+    if (!confirm("Supprimer cet enrichissement et toutes ses donnees ?")) return;
+    try {
+      await fetch(`${API}/api/batch/${batchId}`, { method: "DELETE" });
+      setSelectedBatch(null);
+      fetchBatches();
+    } catch { setError("Erreur reseau"); }
+  };
+
   useEffect(() => {
     fetchFreshness();
-  }, [fetchFreshness]);
+    fetchBatches();
+  }, [fetchFreshness, fetchBatches]);
+
+  // Poll batch detail when a batch has running APIs
+  useEffect(() => {
+    if (!selectedBatch) return;
+    const hasRunning = selectedBatch.apis?.some((a) => a.statut === "running");
+    if (!hasRunning) return;
+    const interval = setInterval(() => fetchBatchDetail(selectedBatch.id), 5000);
+    return () => clearInterval(interval);
+  }, [selectedBatch, fetchBatchDetail]);
 
   useEffect(() => {
     if (!updating) return;
@@ -188,6 +290,153 @@ export default function Parametres() {
             {error}
           </div>
         )}
+
+        {/* Tabs */}
+        <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
+          <button
+            onClick={() => setActiveTab("donnees")}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === "donnees" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            Donnees & MAJ
+          </button>
+          <button
+            onClick={() => { setActiveTab("enrichissement"); fetchBatches(); }}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === "enrichissement" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            Enrichissement Total
+          </button>
+        </div>
+
+        {/* ============ TAB: Enrichissement Total ============ */}
+        {activeTab === "enrichissement" && (
+          <div>
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Enrichissements</h2>
+                <p className="text-xs text-gray-400">Creer un enrichissement total pour enrichir tous les prospects par API</p>
+              </div>
+              <button
+                onClick={createBatch}
+                disabled={creatingBatch}
+                className="px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium disabled:opacity-40"
+              >
+                {creatingBatch ? "Creation..." : "+ Nouvel enrichissement"}
+              </button>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-4 mb-6">
+              {batches.map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => fetchBatchDetail(b.id)}
+                  className={`text-left bg-white rounded-xl border p-4 hover:shadow-md transition ${
+                    selectedBatch?.id === b.id ? "border-blue-500 ring-2 ring-blue-200" : "border-gray-200"
+                  }`}
+                >
+                  <p className="text-sm font-semibold text-gray-900">{b.nom}</p>
+                  <p className="text-[11px] text-gray-400 mt-0.5">{formatDate(b.created_at)}</p>
+                  <div className="flex gap-1 mt-2 flex-wrap">
+                    {(b.apis || []).map((a) => {
+                      const color = a.statut === "done" ? "bg-green-100 text-green-700" : a.statut === "running" ? "bg-blue-100 text-blue-700" : a.statut === "error" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-500";
+                      return (
+                        <span key={a.api_name} className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${color}`}>
+                          {API_LABELS[a.api_name]?.icon} {a.statut === "done" ? a.nb_enrichis : a.statut}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </button>
+              ))}
+              {batches.length === 0 && (
+                <p className="text-sm text-gray-400 col-span-3 text-center py-8">Aucun enrichissement. Cliquez sur "+ Nouvel enrichissement" pour commencer.</p>
+              )}
+            </div>
+
+            {/* Batch detail */}
+            {selectedBatch && (
+              <div className="bg-white rounded-xl border border-gray-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">{selectedBatch.nom}</h3>
+                    <p className="text-xs text-gray-400">{formatDate(selectedBatch.created_at)}</p>
+                  </div>
+                  <button
+                    onClick={() => deleteBatch(selectedBatch.id)}
+                    className="px-3 py-1.5 text-xs text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+                  >
+                    Supprimer
+                  </button>
+                </div>
+
+                {batchLoading && (
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-xs text-blue-600">Chargement...</span>
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  {(selectedBatch.apis || []).map((api) => {
+                    const info = API_LABELS[api.api_name] || { label: api.api_name, icon: "", color: "gray" };
+                    const isRunning = api.statut === "running";
+                    const isDone = api.statut === "done";
+                    const isError = api.statut === "error";
+                    const pct = api.nb_total > 0 ? Math.round((api.nb_enrichis / api.nb_total) * 100) : 0;
+
+                    return (
+                      <div key={api.api_name} className="border border-gray-100 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="text-lg">{info.icon}</span>
+                            <div>
+                              <p className="text-sm font-semibold text-gray-900">{info.label}</p>
+                              {isDone && (
+                                <p className="text-[11px] text-green-600">
+                                  {api.nb_enrichis} enrichis / {api.nb_total} total
+                                  {api.nb_erreurs > 0 && <span className="text-red-500 ml-1">({api.nb_erreurs} erreurs)</span>}
+                                </p>
+                              )}
+                              {isRunning && (
+                                <div className="flex items-center gap-2">
+                                  <div className="w-24 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                    <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                                  </div>
+                                  <span className="text-[11px] text-blue-600">{api.nb_enrichis}/{api.nb_total} ({pct}%)</span>
+                                </div>
+                              )}
+                              {isError && <p className="text-[11px] text-red-500">Erreur</p>}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => triggerEnrich(selectedBatch.id, api.api_name)}
+                            disabled={isRunning}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                              isDone
+                                ? "bg-green-50 text-green-700 hover:bg-green-100 border border-green-200"
+                                : isRunning
+                                  ? "bg-blue-50 text-blue-400 cursor-not-allowed"
+                                  : "bg-blue-600 text-white hover:bg-blue-700"
+                            }`}
+                          >
+                            {isRunning ? (
+                              <span className="flex items-center gap-1.5">
+                                <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                                En cours...
+                              </span>
+                            ) : isDone ? "Re-enrichir" : "Enrichir"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ============ TAB: Donnees & MAJ ============ */}
+        {activeTab === "donnees" && (<>
 
         {/* Indicateur MAJ en cours */}
         {updating && (
@@ -488,6 +737,8 @@ export default function Parametres() {
               : "Tout mettre a jour (RPG + Entreprises + Matching)"}
           </button>
         </div>
+
+        </>)}
       </div>
     </div>
   );
