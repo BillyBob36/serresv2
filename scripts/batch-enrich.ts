@@ -73,18 +73,32 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Normalise une string pour comparaison fuzzy */
+function normalize(s: string): string {
+  return (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9\s]/g, "").trim();
+}
+
+/** Retourne les SIRENs deja enrichis dans une table batch */
+async function getAlreadyEnriched(table: string, batchId: number): Promise<Set<string>> {
+  const rows = await sql.unsafe(`SELECT siren FROM ${table} WHERE batch_id = ${batchId}`);
+  return new Set(rows.map((r: any) => r.siren));
+}
+
 // ============================================================
 // API Gouv enrichissement
 // ============================================================
 async function enrichApiGouv(batchId: number, sirens: string[]) {
-  console.log(`[API_GOUV] Demarrage enrichissement batch ${batchId} pour ${sirens.length} prospects`);
-  await updateBatchApiStatus(batchId, "api_gouv", { statut: "running", nb_total: sirens.length, started_at: "now" });
+  const already = await getAlreadyEnriched("data_api_gouv", batchId);
+  const todo = sirens.filter((s) => !already.has(s));
+  const skipped = sirens.length - todo.length;
+  console.log(`[API_GOUV] Demarrage batch ${batchId}: ${todo.length} a faire (${skipped} deja enrichis sur ${sirens.length})`);
+  await updateBatchApiStatus(batchId, "api_gouv", { statut: "running", nb_total: sirens.length, nb_enrichis: skipped, started_at: "now" });
 
-  let enrichis = 0;
+  let enrichis = skipped;
   let erreurs = 0;
 
-  for (let i = 0; i < sirens.length; i++) {
-    const siren = sirens[i];
+  for (let i = 0; i < todo.length; i++) {
+    const siren = todo[i];
     try {
       const resp = await fetch(
         `https://recherche-entreprises.api.gouv.fr/search?q=${siren}`,
@@ -170,7 +184,7 @@ async function enrichApiGouv(batchId: number, sirens: string[]) {
 
       enrichis++;
       if ((i + 1) % 50 === 0) {
-        console.log(`[API_GOUV] Progression: ${i + 1}/${sirens.length} (${enrichis} OK, ${erreurs} erreurs)`);
+        console.log(`[API_GOUV] Progression: ${i + 1}/${todo.length} (${enrichis} OK, ${erreurs} erreurs)`);
         await updateBatchApiStatus(batchId, "api_gouv", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
@@ -192,19 +206,24 @@ async function enrichApiGouv(batchId: number, sirens: string[]) {
 // ============================================================
 async function enrichInsee(batchId: number, sirens: string[]) {
   if (!INSEE_SIRENE_API_KEY) {
-    console.error("[INSEE] Cle API manquante, abandon");
-    await updateBatchApiStatus(batchId, "insee", { statut: "error", nb_total: sirens.length });
+    console.error("[INSEE] Cle API manquante (INSEE_SIRENE_API_KEY), abandon");
+    await updateBatchApiStatus(batchId, "insee", { statut: "error", nb_total: sirens.length, nb_erreurs: sirens.length });
     return;
   }
 
-  console.log(`[INSEE] Demarrage enrichissement batch ${batchId} pour ${sirens.length} prospects`);
-  await updateBatchApiStatus(batchId, "insee", { statut: "running", nb_total: sirens.length, started_at: "now" });
+  const already = await getAlreadyEnriched("data_insee", batchId);
+  const todo = sirens.filter((s) => !already.has(s));
+  const skipped = sirens.length - todo.length;
+  console.log(`[INSEE] Demarrage batch ${batchId}: ${todo.length} a faire (${skipped} deja enrichis sur ${sirens.length})`);
+  console.log(`[INSEE] API Key presente: ${INSEE_SIRENE_API_KEY.substring(0, 8)}...`);
+  await updateBatchApiStatus(batchId, "insee", { statut: "running", nb_total: sirens.length, nb_enrichis: skipped, started_at: "now" });
 
-  let enrichis = 0;
+  let enrichis = skipped;
   let erreurs = 0;
+  let consecutiveErrors = 0;
 
-  for (let i = 0; i < sirens.length; i++) {
-    const siren = sirens[i];
+  for (let i = 0; i < todo.length; i++) {
+    const siren = todo[i];
     try {
       const resp = await fetch(`${INSEE_SIRENE_BASE}/siren/${siren}`, {
         headers: { "Authorization": `Bearer ${INSEE_SIRENE_API_KEY}`, "Accept": "application/json" },
@@ -212,16 +231,32 @@ async function enrichInsee(batchId: number, sirens: string[]) {
       });
 
       if (resp.status === 429) {
-        console.warn("[INSEE] 429 rate limit, pause 60s...");
-        await sleep(60000);
+        console.warn("[INSEE] 429 rate limit, pause 120s...");
+        await sleep(120000);
         i--; // retry
+        consecutiveErrors = 0;
         continue;
       }
 
+      if (resp.status === 403 || resp.status === 401) {
+        console.error(`[INSEE] ${resp.status} auth error, verifier la cle API. Abandon.`);
+        await updateBatchApiStatus(batchId, "insee", { statut: "error", nb_enrichis: enrichis, nb_erreurs: erreurs + (todo.length - i) });
+        return;
+      }
+
       if (!resp.ok) {
+        if (i < 3 || (i + 1) % 100 === 0) console.warn(`[INSEE] siren=${siren} HTTP ${resp.status}`);
         erreurs++;
+        consecutiveErrors++;
+        // Sleep even on error to avoid hammering
+        await sleep(2000);
+        if (consecutiveErrors > 50) {
+          console.error("[INSEE] 50 erreurs consecutives, arret");
+          break;
+        }
         continue;
       }
+      consecutiveErrors = 0;
 
       const json = await resp.json();
       const ul = json.uniteLegale;
@@ -246,18 +281,25 @@ async function enrichInsee(batchId: number, sirens: string[]) {
       `;
 
       enrichis++;
+      consecutiveErrors = 0;
       if ((i + 1) % 50 === 0) {
-        console.log(`[INSEE] Progression: ${i + 1}/${sirens.length}`);
+        console.log(`[INSEE] Progression: ${i + 1}/${todo.length} (${enrichis} OK)`);
         await updateBatchApiStatus(batchId, "insee", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
-      // INSEE rate limit: ~30 req/min
+      // INSEE rate limit: ~30 req/min → 2s par requete + pause toutes les 25
       if ((i + 1) % 25 === 0) await sleep(60000);
       else await sleep(2000);
 
     } catch (err) {
       erreurs++;
+      consecutiveErrors++;
       console.error(`[INSEE] Erreur siren=${siren}:`, err);
+      await sleep(2000);
+      if (consecutiveErrors > 50) {
+        console.error("[INSEE] 50 erreurs consecutives (catch), arret");
+        break;
+      }
     }
   }
 
@@ -269,14 +311,17 @@ async function enrichInsee(batchId: number, sirens: string[]) {
 // BODACC enrichissement
 // ============================================================
 async function enrichBodacc(batchId: number, sirens: string[]) {
-  console.log(`[BODACC] Demarrage enrichissement batch ${batchId} pour ${sirens.length} prospects`);
-  await updateBatchApiStatus(batchId, "bodacc", { statut: "running", nb_total: sirens.length, started_at: "now" });
+  const already = await getAlreadyEnriched("data_bodacc", batchId);
+  const todo = sirens.filter((s) => !already.has(s));
+  const skipped = sirens.length - todo.length;
+  console.log(`[BODACC] Demarrage batch ${batchId}: ${todo.length} a faire (${skipped} deja enrichis sur ${sirens.length})`);
+  await updateBatchApiStatus(batchId, "bodacc", { statut: "running", nb_total: sirens.length, nb_enrichis: skipped, started_at: "now" });
 
-  let enrichis = 0;
+  let enrichis = skipped;
   let erreurs = 0;
 
-  for (let i = 0; i < sirens.length; i++) {
-    const siren = sirens[i].replace(/\s/g, "");
+  for (let i = 0; i < todo.length; i++) {
+    const siren = todo[i].replace(/\s/g, "");
     try {
       const resp = await fetch(
         `https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/annonces-commerciales/records?where=registre%3D%22${siren}%22&order_by=dateparution%20desc&limit=20`,
@@ -320,7 +365,7 @@ async function enrichBodacc(batchId: number, sirens: string[]) {
       }
 
       if ((i + 1) % 100 === 0) {
-        console.log(`[BODACC] Progression: ${i + 1}/${sirens.length}`);
+        console.log(`[BODACC] Progression: ${i + 1}/${todo.length} (${enrichis} OK)`);
         await updateBatchApiStatus(batchId, "bodacc", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
@@ -333,7 +378,7 @@ async function enrichBodacc(batchId: number, sirens: string[]) {
   }
 
   await updateBatchApiStatus(batchId, "bodacc", { statut: "done", nb_enrichis: enrichis, nb_erreurs: erreurs, completed_at: "now" });
-  console.log(`[BODACC] Termine: ${enrichis}/${sirens.length}`);
+  console.log(`[BODACC] Termine: ${enrichis}/${sirens.length}`);  
 }
 
 // ============================================================
@@ -346,10 +391,13 @@ async function enrichGooglePlaces(batchId: number, sirens: string[]) {
     return;
   }
 
-  console.log(`[GOOGLE] Demarrage enrichissement batch ${batchId} pour ${sirens.length} prospects`);
-  await updateBatchApiStatus(batchId, "google_places", { statut: "running", nb_total: sirens.length, started_at: "now" });
+  const already = await getAlreadyEnriched("data_google_places", batchId);
+  const todo = sirens.filter((s) => !already.has(s));
+  const skipped = sirens.length - todo.length;
+  console.log(`[GOOGLE] Demarrage batch ${batchId}: ${todo.length} a faire (${skipped} deja enrichis sur ${sirens.length})`);
+  await updateBatchApiStatus(batchId, "google_places", { statut: "running", nb_total: sirens.length, nb_enrichis: skipped, started_at: "now" });
 
-  let enrichis = 0;
+  let enrichis = skipped;
   let erreurs = 0;
 
   // Get company names from data_api_gouv (same batch) or enrichissement_entreprise
@@ -376,8 +424,8 @@ async function enrichGooglePlaces(batchId: number, sirens: string[]) {
   const serreMap = new Map<string, any>();
   for (const r of serreRows) serreMap.set(r.siren, r);
 
-  for (let i = 0; i < sirens.length; i++) {
-    const siren = sirens[i];
+  for (let i = 0; i < todo.length; i++) {
+    const siren = todo[i];
     const gouv = gouvMap.get(siren);
     const enrich = enrichMap.get(siren);
     const serre = serreMap.get(siren);
@@ -450,7 +498,7 @@ async function enrichGooglePlaces(batchId: number, sirens: string[]) {
 
       enrichis++;
       if ((i + 1) % 50 === 0) {
-        console.log(`[GOOGLE] Progression: ${i + 1}/${sirens.length} (${enrichis} OK)`);
+        console.log(`[GOOGLE] Progression: ${i + 1}/${todo.length} (${enrichis} OK)`);
         await updateBatchApiStatus(batchId, "google_places", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
@@ -477,44 +525,80 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
     return;
   }
 
-  console.log(`[PJ] Demarrage enrichissement batch ${batchId} pour ${sirens.length} prospects`);
-  await updateBatchApiStatus(batchId, "pages_jaunes", { statut: "running", nb_total: sirens.length, started_at: "now" });
+  const already = await getAlreadyEnriched("data_pages_jaunes", batchId);
+  const todoSirens = sirens.filter((s) => !already.has(s));
+  const skipped = sirens.length - todoSirens.length;
+  console.log(`[PJ] Demarrage batch ${batchId}: ${todoSirens.length} a faire (${skipped} deja enrichis sur ${sirens.length})`);
+  await updateBatchApiStatus(batchId, "pages_jaunes", { statut: "running", nb_total: sirens.length, nb_enrichis: skipped, started_at: "now" });
 
-  // Strategy: search PJ by relevant categories per department
-  // Then match results by SIRET (first 9 digits = SIREN)
+  if (todoSirens.length === 0) {
+    await updateBatchApiStatus(batchId, "pages_jaunes", { statut: "done", completed_at: "now" });
+    console.log("[PJ] Rien a faire, tous deja enrichis");
+    return;
+  }
+
+  // Build lookup maps for matching: SIREN set + normalized name → siren map
+  const sirenSet = new Set(todoSirens);
+
+  // Get company names from data_api_gouv or enrichissement_entreprise
+  const gouvNames = await sql`
+    SELECT siren, nom_complet, libelle_commune_siege, code_postal_siege
+    FROM data_api_gouv WHERE batch_id = ${batchId}
+  `;
+  const enrichNames = await sql`
+    SELECT siren, nom_complet, libelle_commune_siege, code_postal_siege
+    FROM enrichissement_entreprise
+  `;
+  const serreNames = await sql`
+    SELECT DISTINCT siren, nom_entreprise FROM serres WHERE siren IS NOT NULL
+  `;
+
+  // Map: normalized_name → siren (for fuzzy matching)
+  const nameToSiren = new Map<string, string>();
+  // Map: code_postal → [{ siren, name }] (for locality matching)
+  const cpToEntries = new Map<string, { siren: string; name: string }[]>();
+
+  for (const source of [gouvNames, enrichNames]) {
+    for (const r of source) {
+      if (!r.siren || !sirenSet.has(r.siren)) continue;
+      const name = normalize(r.nom_complet || "");
+      if (name.length > 3) nameToSiren.set(name, r.siren);
+      if (r.code_postal_siege) {
+        const cp = String(r.code_postal_siege).substring(0, 5);
+        if (!cpToEntries.has(cp)) cpToEntries.set(cp, []);
+        cpToEntries.get(cp)!.push({ siren: r.siren, name });
+      }
+    }
+  }
+  for (const r of serreNames) {
+    if (!r.siren || !sirenSet.has(r.siren)) continue;
+    const name = normalize(r.nom_entreprise || "");
+    if (name.length > 3 && !nameToSiren.has(name)) nameToSiren.set(name, r.siren);
+  }
+
+  console.log(`[PJ] Index: ${nameToSiren.size} noms, ${cpToEntries.size} codes postaux`);
+
   const categories = [
     "serres+horticoles", "pepinieriste", "horticulteur", "maraicher",
-    "fleuriste+producteur", "jardinerie", "cultures+sous+serre"
+    "fleuriste+producteur", "jardinerie", "cultures+sous+serre",
+    "producteur+de+plantes", "exploitation+agricole+serres"
   ];
 
-  // Get unique departments from prospects
-  const depts = await sql`
-    SELECT DISTINCT LEFT(s.departement, 2) as dept
-    FROM serres s WHERE s.siren IS NOT NULL AND s.departement IS NOT NULL
-    ORDER BY dept
-  `;
-  const departments = depts.map((r) => r.dept).filter(Boolean);
-
-  const sirenSet = new Set(sirens);
-  let enrichis = 0;
+  let enrichis = skipped;
   let totalResults = 0;
+  const matchedSirens = new Set<string>();
 
-  // For each category, run Apify actor with France-wide search
   for (const cat of categories) {
     const searchUrl = `https://www.pagesjaunes.fr/annuaire/chercherlespros?quoiqui=${cat}&ou=france`;
     console.log(`[PJ] Lancement Apify pour: ${cat}`);
 
     try {
-      // Start actor run
       const startResp = await fetch(
         `https://api.apify.com/v2/acts/${APIFY_PJ_ACTOR_ID}/runs?token=${APIFY_API_TOKEN}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            url: searchUrl,
-            maxItems: 10000,
-          }),
+          body: JSON.stringify({ url: searchUrl, maxItems: 10000 }),
         }
       );
 
@@ -529,16 +613,17 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
 
       console.log(`[PJ] Run ${runId} lance pour ${cat}, attente...`);
 
-      // Poll for completion
       let runStatus = "RUNNING";
       let datasetId = "";
+      let pollCount = 0;
       while (runStatus === "RUNNING" || runStatus === "READY") {
         await sleep(10000);
         const statusResp = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`);
         const statusData = await statusResp.json();
         runStatus = statusData.data?.status;
         datasetId = statusData.data?.defaultDatasetId;
-        console.log(`[PJ] Run ${runId} status: ${runStatus}`);
+        pollCount++;
+        if (pollCount % 6 === 0) console.log(`[PJ] Run ${runId} status: ${runStatus} (${pollCount * 10}s)`);
       }
 
       if (runStatus !== "SUCCEEDED" || !datasetId) {
@@ -550,6 +635,8 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
       let offset = 0;
       const limit = 1000;
       let hasMore = true;
+      let catResults = 0;
+      let catMatches = 0;
 
       while (hasMore) {
         const itemsResp = await fetch(
@@ -560,44 +647,89 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
 
         if (results.length === 0) { hasMore = false; break; }
         totalResults += results.length;
+        catResults += results.length;
 
         for (const item of results) {
-          // Match by SIRET → SIREN (first 9 digits)
+          let matchedSiren: string | null = null;
+
+          // Strategy 1: match by SIRET → SIREN
           const itemSiret = (item.siret || "").replace(/\s/g, "");
           const itemSiren = itemSiret.substring(0, 9);
+          if (itemSiren && sirenSet.has(itemSiren)) {
+            matchedSiren = itemSiren;
+          }
 
-          if (!itemSiren || !sirenSet.has(itemSiren)) continue;
+          // Strategy 2: match by normalized company name
+          if (!matchedSiren && item.raison_social) {
+            const pjName = normalize(item.raison_social);
+            if (pjName.length > 3) {
+              // Exact normalized name match
+              const exactMatch = nameToSiren.get(pjName);
+              if (exactMatch && !matchedSirens.has(exactMatch)) {
+                matchedSiren = exactMatch;
+              }
+            }
+          }
+
+          // Strategy 3: match by name + postal code proximity
+          if (!matchedSiren && item.raison_social && item.postal_code) {
+            const pjName = normalize(item.raison_social);
+            const cp = String(item.postal_code).substring(0, 5);
+            const localEntries = cpToEntries.get(cp) || [];
+            for (const entry of localEntries) {
+              if (matchedSirens.has(entry.siren)) continue;
+              // Token-based fuzzy match
+              const pjTokens = pjName.split(/\s+/).filter((t) => t.length > 2);
+              const dbTokens = entry.name.split(/\s+/).filter((t) => t.length > 2);
+              if (dbTokens.length === 0) continue;
+              const common = pjTokens.filter((t) => dbTokens.some((d) => d.includes(t) || t.includes(d)));
+              const score = common.length / Math.max(dbTokens.length, 1);
+              if (score >= 0.5) {
+                matchedSiren = entry.siren;
+                break;
+              }
+            }
+          }
+
+          if (!matchedSiren) continue;
+          if (matchedSirens.has(matchedSiren)) continue; // already matched this siren
+          matchedSirens.add(matchedSiren);
 
           const siteWeb = item.external_links?.[0]?.site_externe || null;
           const telephone = Array.isArray(item.tel) ? item.tel : (item.tel ? [item.tel] : []);
 
-          await sql`
-            INSERT INTO data_pages_jaunes (
-              batch_id, siren, pj_id, raison_social, description,
-              adresse, code_postal, ville, telephone, siret, naf,
-              forme_juridique, date_creation, activite, multi_activite,
-              site_web, url_pj, raw_data
-            ) VALUES (
-              ${batchId}, ${itemSiren}, ${item.id || null}, ${item.raison_social || null},
-              ${item.description || null}, ${item.adresse || null}, ${item.postal_code || null},
-              ${item.city || null}, ${telephone}, ${itemSiret}, ${item.NAF || null},
-              ${item.forme_juridique || null}, ${item.creation_date || null},
-              ${item.activite || null},
-              ${Array.isArray(item.multi_activite) && item.multi_activite.length > 0 ? item.multi_activite : null},
-              ${siteWeb}, ${item.url || null}, ${sql.json(item)}
-            ) ON CONFLICT (batch_id, siren) DO UPDATE SET
-              telephone = EXCLUDED.telephone, site_web = EXCLUDED.site_web,
-              raw_data = EXCLUDED.raw_data, enrichi_at = NOW()
-          `;
-
-          enrichis++;
+          try {
+            await sql`
+              INSERT INTO data_pages_jaunes (
+                batch_id, siren, pj_id, raison_social, description,
+                adresse, code_postal, ville, telephone, siret, naf,
+                forme_juridique, date_creation, activite, multi_activite,
+                site_web, url_pj, raw_data
+              ) VALUES (
+                ${batchId}, ${matchedSiren}, ${item.id || null}, ${item.raison_social || null},
+                ${item.description || null}, ${item.adresse || null}, ${item.postal_code || null},
+                ${item.city || null}, ${telephone.length > 0 ? sql.json(telephone) : null},
+                ${itemSiret || null}, ${item.NAF || null},
+                ${item.forme_juridique || null}, ${item.creation_date || null},
+                ${item.activite || null},
+                ${Array.isArray(item.multi_activite) && item.multi_activite.length > 0 ? sql.json(item.multi_activite) : null},
+                ${siteWeb}, ${item.url || null}, ${sql.json(item)}
+              ) ON CONFLICT (batch_id, siren) DO UPDATE SET
+                telephone = EXCLUDED.telephone, site_web = EXCLUDED.site_web,
+                raw_data = EXCLUDED.raw_data, enrichi_at = NOW()
+            `;
+            enrichis++;
+            catMatches++;
+          } catch (dbErr) {
+            console.error(`[PJ] DB error siren=${matchedSiren}:`, dbErr);
+          }
         }
 
         offset += limit;
         if (results.length < limit) hasMore = false;
       }
 
-      console.log(`[PJ] Categorie ${cat}: ${totalResults} resultats PJ, ${enrichis} matches SIREN`);
+      console.log(`[PJ] Categorie ${cat}: ${catResults} resultats PJ, ${catMatches} matches`);
       await updateBatchApiStatus(batchId, "pages_jaunes", { nb_enrichis: enrichis });
 
     } catch (err) {
