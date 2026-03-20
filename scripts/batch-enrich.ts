@@ -519,8 +519,53 @@ async function enrichGooglePlaces(batchId: number, sirens: string[]) {
 }
 
 // ============================================================
-// Pages Jaunes enrichissement (via Apify)
+// Pages Jaunes enrichissement (via Apify) — par département
 // ============================================================
+
+// Helper: run one Apify PJ search and return items
+async function runApifyPjSearch(searchUrl: string, label: string): Promise<any[]> {
+  try {
+    const startResp = await fetch(
+      `https://api.apify.com/v2/acts/${APIFY_PJ_ACTOR_ID}/runs?token=${APIFY_API_TOKEN}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: searchUrl, maxItems: 500 }),
+      }
+    );
+    if (!startResp.ok) {
+      console.warn(`[PJ] Apify start error ${startResp.status} for: ${label}`);
+      return [];
+    }
+    const runData = await startResp.json();
+    const runId = runData.data?.id;
+    if (!runId) return [];
+
+    let runStatus = "RUNNING";
+    let datasetId = "";
+    let pollCount = 0;
+    while (runStatus === "RUNNING" || runStatus === "READY") {
+      await sleep(10000);
+      const statusResp = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`);
+      const statusData = await statusResp.json();
+      runStatus = statusData.data?.status;
+      datasetId = statusData.data?.defaultDatasetId;
+      pollCount++;
+      if (pollCount > 30) { console.warn(`[PJ] Run ${runId} timeout`); return []; }
+    }
+    if (runStatus !== "SUCCEEDED" || !datasetId) return [];
+
+    const itemsResp = await fetch(
+      `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}&limit=1000&format=json`
+    );
+    const items = await itemsResp.json();
+    return Array.isArray(items) ? items : [];
+  } catch (err) {
+    console.error(`[PJ] Apify error for ${label}:`, err);
+    return [];
+  }
+}
+
 async function enrichPagesJaunes(batchId: number, sirens: string[]) {
   if (!APIFY_API_TOKEN) {
     console.error("[PJ] Token Apify manquant (APIFY_API_TOKEN), abandon");
@@ -540,208 +585,162 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
     return;
   }
 
-  // Build lookup maps for matching: SIREN set + normalized name → siren map
+  // Build lookup maps
   const sirenSet = new Set(todoSirens);
 
-  // Get company names from data_api_gouv or enrichissement_entreprise
-  const gouvNames = await sql`
+  const gouvData = await sql`
     SELECT siren, nom_complet, libelle_commune_siege, code_postal_siege
     FROM data_api_gouv WHERE batch_id = ${batchId}
   `;
-  const enrichNames = await sql`
-    SELECT siren, nom_complet, libelle_commune_siege, code_postal_siege
-    FROM enrichissement_entreprise
-  `;
-  const serreNames = await sql`
-    SELECT DISTINCT siren, nom_entreprise FROM serres WHERE siren IS NOT NULL
-  `;
 
-  // Map: normalized_name → siren (for fuzzy matching)
+  // Map: normalized_name → siren
   const nameToSiren = new Map<string, string>();
-  // Map: code_postal → [{ siren, name }] (for locality matching)
+  // Map: code_postal → [{ siren, name }]
   const cpToEntries = new Map<string, { siren: string; name: string }[]>();
+  // Map: département → commune names (for PJ search locality)
+  const depToCommunes = new Map<string, Set<string>>();
+  // Set of unique départements
+  const departements = new Set<string>();
 
-  for (const source of [gouvNames, enrichNames]) {
-    for (const r of source) {
-      if (!r.siren || !sirenSet.has(r.siren)) continue;
-      const name = normalize(r.nom_complet || "");
-      if (name.length > 3) nameToSiren.set(name, r.siren);
-      if (r.code_postal_siege) {
-        const cp = String(r.code_postal_siege).substring(0, 5);
-        if (!cpToEntries.has(cp)) cpToEntries.set(cp, []);
-        cpToEntries.get(cp)!.push({ siren: r.siren, name });
+  for (const r of gouvData) {
+    if (!r.siren || !sirenSet.has(r.siren)) continue;
+    const name = normalize(r.nom_complet || "");
+    if (name.length > 3) nameToSiren.set(name, r.siren);
+    if (r.code_postal_siege) {
+      const cp = String(r.code_postal_siege).substring(0, 5);
+      const dep = cp.substring(0, 2);
+      departements.add(dep);
+      if (!cpToEntries.has(cp)) cpToEntries.set(cp, []);
+      cpToEntries.get(cp)!.push({ siren: r.siren, name });
+      if (r.libelle_commune_siege) {
+        if (!depToCommunes.has(dep)) depToCommunes.set(dep, new Set());
+        depToCommunes.get(dep)!.add(r.libelle_commune_siege);
       }
     }
   }
-  for (const r of serreNames) {
-    if (!r.siren || !sirenSet.has(r.siren)) continue;
-    const name = normalize(r.nom_entreprise || "");
-    if (name.length > 3 && !nameToSiren.has(name)) nameToSiren.set(name, r.siren);
-  }
 
-  console.log(`[PJ] Index: ${nameToSiren.size} noms, ${cpToEntries.size} codes postaux`);
+  console.log(`[PJ] Index: ${nameToSiren.size} noms, ${cpToEntries.size} codes postaux, ${departements.size} departements`);
 
-  const categories = [
-    "serres+horticoles", "pepinieriste", "horticulteur", "maraicher",
-    "fleuriste+producteur", "jardinerie", "cultures+sous+serre",
-    "producteur+de+plantes", "exploitation+agricole+serres"
-  ];
+  // Keywords to search — broad terms that cover serre-related businesses
+  const keywords = ["serre", "horticulture", "pepiniere"];
 
   let enrichis = skipped;
   let totalResults = 0;
-  const matchedSirens = new Set<string>();
+  const matchedSirens = new Set<string>(already);
+  const depList = [...departements].sort();
 
-  for (const cat of categories) {
-    const searchUrl = `https://www.pagesjaunes.fr/annuaire/chercherlespros?quoiqui=${cat}&ou=france`;
-    console.log(`[PJ] Lancement Apify pour: ${cat}`);
+  // Helper: try to match a PJ item to a prospect
+  function matchItem(item: any): string | null {
+    // Strategy 1: SIRET → SIREN
+    const itemSiret = (item.siret || "").replace(/\s/g, "");
+    const itemSiren = itemSiret.substring(0, 9);
+    if (itemSiren && sirenSet.has(itemSiren) && !matchedSirens.has(itemSiren)) return itemSiren;
 
-    try {
-      const startResp = await fetch(
-        `https://api.apify.com/v2/acts/${APIFY_PJ_ACTOR_ID}/runs?token=${APIFY_API_TOKEN}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: searchUrl, maxItems: 10000 }),
+    // Strategy 2: exact normalized name
+    if (item.raison_social) {
+      const pjName = normalize(item.raison_social);
+      if (pjName.length > 3) {
+        const exactMatch = nameToSiren.get(pjName);
+        if (exactMatch && !matchedSirens.has(exactMatch)) return exactMatch;
+      }
+    }
+
+    // Strategy 3: fuzzy name + postal code
+    if (item.raison_social && item.postal_code) {
+      const pjName = normalize(item.raison_social);
+      const cp = String(item.postal_code).substring(0, 5);
+      // Check same CP and neighboring CPs (±1)
+      const cpsToCheck = [cp];
+      const cpNum = parseInt(cp, 10);
+      if (!isNaN(cpNum)) {
+        cpsToCheck.push(String(cpNum - 1).padStart(5, "0"), String(cpNum + 1).padStart(5, "0"));
+      }
+      for (const checkCp of cpsToCheck) {
+        const localEntries = cpToEntries.get(checkCp) || [];
+        for (const entry of localEntries) {
+          if (matchedSirens.has(entry.siren)) continue;
+          const pjTokens = pjName.split(/\s+/).filter((t) => t.length > 2);
+          const dbTokens = entry.name.split(/\s+/).filter((t) => t.length > 2);
+          if (dbTokens.length === 0) continue;
+          const common = pjTokens.filter((t) => dbTokens.some((d) => d.includes(t) || t.includes(d)));
+          const score = common.length / Math.max(dbTokens.length, 1);
+          if (score >= 0.4) return entry.siren;
         }
-      );
-
-      if (!startResp.ok) {
-        console.error(`[PJ] Erreur demarrage Apify pour ${cat}: ${startResp.status}`);
-        continue;
       }
+    }
+    return null;
+  }
 
-      const runData = await startResp.json();
-      const runId = runData.data?.id;
-      if (!runId) { console.error("[PJ] Pas de runId"); continue; }
+  // Helper: insert matched PJ item
+  async function insertMatch(matchedSiren: string, item: any) {
+    const itemSiret = (item.siret || "").replace(/\s/g, "");
+    const siteWeb = item.external_links?.[0]?.site_externe || null;
+    const telephone = Array.isArray(item.tel) ? item.tel : (item.tel ? [item.tel] : []);
+    await sql`
+      INSERT INTO data_pages_jaunes (
+        batch_id, siren, pj_id, raison_social, description,
+        adresse, code_postal, ville, telephone, siret, naf,
+        forme_juridique, date_creation, activite, multi_activite,
+        site_web, url_pj, raw_data
+      ) VALUES (
+        ${batchId}, ${matchedSiren}, ${item.id || null}, ${item.raison_social || null},
+        ${item.description || null}, ${item.adresse || null}, ${item.postal_code || null},
+        ${item.city || null}, ${telephone.length > 0 ? sql.json(telephone) : null},
+        ${itemSiret || null}, ${item.NAF || null},
+        ${item.forme_juridique || null}, ${item.creation_date || null},
+        ${item.activite || null},
+        ${Array.isArray(item.multi_activite) && item.multi_activite.length > 0 ? sql.json(item.multi_activite) : null},
+        ${siteWeb}, ${item.url || null}, ${sql.json(item)}
+      ) ON CONFLICT (batch_id, siren) DO UPDATE SET
+        telephone = EXCLUDED.telephone, site_web = EXCLUDED.site_web,
+        raw_data = EXCLUDED.raw_data, enrichi_at = NOW()
+    `;
+  }
 
-      console.log(`[PJ] Run ${runId} lance pour ${cat}, attente...`);
+  console.log(`[PJ] Strategie: ${keywords.length} mots-cles x ${depList.length} departements = ${keywords.length * depList.length} recherches`);
 
-      let runStatus = "RUNNING";
-      let datasetId = "";
-      let pollCount = 0;
-      while (runStatus === "RUNNING" || runStatus === "READY") {
-        await sleep(10000);
-        const statusResp = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_TOKEN}`);
-        const statusData = await statusResp.json();
-        runStatus = statusData.data?.status;
-        datasetId = statusData.data?.defaultDatasetId;
-        pollCount++;
-        if (pollCount % 6 === 0) console.log(`[PJ] Run ${runId} status: ${runStatus} (${pollCount * 10}s)`);
-      }
+  let searchCount = 0;
+  for (const dep of depList) {
+    for (const kw of keywords) {
+      searchCount++;
+      const searchUrl = `https://www.pagesjaunes.fr/annuaire/chercherlespros?quoiqui=${kw}&ou=departement+${dep}`;
+      const label = `${kw} dep=${dep}`;
 
-      if (runStatus !== "SUCCEEDED" || !datasetId) {
-        console.error(`[PJ] Run echoue: ${runStatus}`);
-        continue;
-      }
+      const items = await runApifyPjSearch(searchUrl, label);
+      totalResults += items.length;
 
-      // Fetch all dataset items
-      let offset = 0;
-      const limit = 1000;
-      let hasMore = true;
-      let catResults = 0;
-      let catMatches = 0;
-
-      while (hasMore) {
-        const itemsResp = await fetch(
-          `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_TOKEN}&offset=${offset}&limit=${limit}&format=json`
-        );
-        const items = await itemsResp.json();
-        const results = Array.isArray(items) ? items : [];
-
-        if (results.length === 0) { hasMore = false; break; }
-        totalResults += results.length;
-        catResults += results.length;
-
-        for (const item of results) {
-          let matchedSiren: string | null = null;
-
-          // Strategy 1: match by SIRET → SIREN
-          const itemSiret = (item.siret || "").replace(/\s/g, "");
-          const itemSiren = itemSiret.substring(0, 9);
-          if (itemSiren && sirenSet.has(itemSiren)) {
-            matchedSiren = itemSiren;
-          }
-
-          // Strategy 2: match by normalized company name
-          if (!matchedSiren && item.raison_social) {
-            const pjName = normalize(item.raison_social);
-            if (pjName.length > 3) {
-              // Exact normalized name match
-              const exactMatch = nameToSiren.get(pjName);
-              if (exactMatch && !matchedSirens.has(exactMatch)) {
-                matchedSiren = exactMatch;
-              }
-            }
-          }
-
-          // Strategy 3: match by name + postal code proximity
-          if (!matchedSiren && item.raison_social && item.postal_code) {
-            const pjName = normalize(item.raison_social);
-            const cp = String(item.postal_code).substring(0, 5);
-            const localEntries = cpToEntries.get(cp) || [];
-            for (const entry of localEntries) {
-              if (matchedSirens.has(entry.siren)) continue;
-              // Token-based fuzzy match
-              const pjTokens = pjName.split(/\s+/).filter((t) => t.length > 2);
-              const dbTokens = entry.name.split(/\s+/).filter((t) => t.length > 2);
-              if (dbTokens.length === 0) continue;
-              const common = pjTokens.filter((t) => dbTokens.some((d) => d.includes(t) || t.includes(d)));
-              const score = common.length / Math.max(dbTokens.length, 1);
-              if (score >= 0.5) {
-                matchedSiren = entry.siren;
-                break;
-              }
-            }
-          }
-
-          if (!matchedSiren) continue;
-          if (matchedSirens.has(matchedSiren)) continue; // already matched this siren
-          matchedSirens.add(matchedSiren);
-
-          const siteWeb = item.external_links?.[0]?.site_externe || null;
-          const telephone = Array.isArray(item.tel) ? item.tel : (item.tel ? [item.tel] : []);
-
-          try {
-            await sql`
-              INSERT INTO data_pages_jaunes (
-                batch_id, siren, pj_id, raison_social, description,
-                adresse, code_postal, ville, telephone, siret, naf,
-                forme_juridique, date_creation, activite, multi_activite,
-                site_web, url_pj, raw_data
-              ) VALUES (
-                ${batchId}, ${matchedSiren}, ${item.id || null}, ${item.raison_social || null},
-                ${item.description || null}, ${item.adresse || null}, ${item.postal_code || null},
-                ${item.city || null}, ${telephone.length > 0 ? sql.json(telephone) : null},
-                ${itemSiret || null}, ${item.NAF || null},
-                ${item.forme_juridique || null}, ${item.creation_date || null},
-                ${item.activite || null},
-                ${Array.isArray(item.multi_activite) && item.multi_activite.length > 0 ? sql.json(item.multi_activite) : null},
-                ${siteWeb}, ${item.url || null}, ${sql.json(item)}
-              ) ON CONFLICT (batch_id, siren) DO UPDATE SET
-                telephone = EXCLUDED.telephone, site_web = EXCLUDED.site_web,
-                raw_data = EXCLUDED.raw_data, enrichi_at = NOW()
-            `;
-            enrichis++;
-            catMatches++;
-          } catch (dbErr) {
-            console.error(`[PJ] DB error siren=${matchedSiren}:`, dbErr);
-          }
+      let depMatches = 0;
+      for (const item of items) {
+        const matched = matchItem(item);
+        if (!matched) continue;
+        matchedSirens.add(matched);
+        try {
+          await insertMatch(matched, item);
+          enrichis++;
+          depMatches++;
+        } catch (dbErr) {
+          console.error(`[PJ] DB error siren=${matched}:`, dbErr);
         }
-
-        offset += limit;
-        if (results.length < limit) hasMore = false;
       }
 
-      console.log(`[PJ] Categorie ${cat}: ${catResults} resultats PJ, ${catMatches} matches`);
+      if (items.length > 0 || depMatches > 0) {
+        console.log(`[PJ] [${searchCount}/${keywords.length * depList.length}] ${label}: ${items.length} resultats, ${depMatches} matches`);
+      }
+
       await updateBatchApiStatus(batchId, "pages_jaunes", { nb_enrichis: enrichis });
 
-    } catch (err) {
-      console.error(`[PJ] Erreur categorie ${cat}:`, err);
+      // Small delay between Apify runs to avoid overloading
+      await sleep(2000);
+    }
+
+    // Log progress every 10 départements
+    if (depList.indexOf(dep) % 10 === 9) {
+      console.log(`[PJ] Progress: ${depList.indexOf(dep) + 1}/${depList.length} departements, ${enrichis - skipped} matches, ${totalResults} resultats PJ`);
     }
   }
 
   await updateBatchApiStatus(batchId, "pages_jaunes", { statut: "done", nb_enrichis: enrichis, nb_erreurs: 0, completed_at: "now" });
-  console.log(`[PJ] Termine: ${enrichis} prospects matches sur ${totalResults} resultats PJ`);
+  console.log(`[PJ] Termine: ${enrichis - skipped} nouveaux matches (${enrichis} total) sur ${totalResults} resultats PJ`);
 }
 
 // ============================================================
