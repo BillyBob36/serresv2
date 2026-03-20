@@ -689,7 +689,7 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
         ${itemSiret || null}, ${item.NAF || null},
         ${item.forme_juridique || null}, ${item.creation_date || null},
         ${item.activite || null},
-        ${Array.isArray(item.multi_activite) && item.multi_activite.length > 0 ? sql.json(item.multi_activite) : null},
+        ${Array.isArray(item.multi_activite) && item.multi_activite.length > 0 ? sql.array(item.multi_activite.map(String)) : null},
         ${siteWeb}, ${item.url || null}, ${sql.json(item)}
       ) ON CONFLICT (batch_id, siren) DO UPDATE SET
         telephone = EXCLUDED.telephone, site_web = EXCLUDED.site_web,
