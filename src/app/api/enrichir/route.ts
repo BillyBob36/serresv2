@@ -283,7 +283,7 @@ export async function POST(request: NextRequest) {
       const inseeResp = await fetch(
         `${INSEE_SIRENE_BASE}/siren/${siren}`,
         {
-          headers: { "Authorization": `Bearer ${INSEE_SIRENE_API_KEY}`, "Accept": "application/json" },
+          headers: { "X-INSEE-Api-Key-Integration": INSEE_SIRENE_API_KEY, "Accept": "application/json" },
           signal: AbortSignal.timeout(10000),
         }
       );

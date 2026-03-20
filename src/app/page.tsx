@@ -212,24 +212,26 @@ export default function Home() {
   const fetchBatchList = useCallback(async () => {
     try {
       const resp = await fetch(`${API}/api/batch`);
+      if (!resp.ok) return;
       const json = await resp.json();
       const list = (json.data || []).filter((b: any) =>
         (b.apis || []).some((a: any) => a.statut === "done")
       );
       setBatchList(list);
-      if (list.length > 0 && !selectedBatchId) {
-        setSelectedBatchId(list[0].id);
+      if (list.length > 0) {
+        setSelectedBatchId((prev) => prev ?? list[0].id);
       }
     } catch (err) {
       console.error("Erreur fetch batches:", err);
     }
-  }, [selectedBatchId]);
+  }, []);
 
   // Fetch batch data when in stored mode
   const fetchBatchData = useCallback(async (batchId: number, sirens: string[]) => {
     if (sirens.length === 0) return;
     try {
       const resp = await fetch(`${API}/api/batch/${batchId}/data?sirens=${sirens.join(",")}`);
+      if (!resp.ok) return;
       const json = await resp.json();
       if (json.data) {
         setEnrichCache((prev) => ({ ...prev, ...json.data }));

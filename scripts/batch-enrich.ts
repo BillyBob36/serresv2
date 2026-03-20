@@ -229,7 +229,7 @@ async function enrichInsee(batchId: number, sirens: string[]) {
     const siren = todo[i];
     try {
       const resp = await fetch(`${INSEE_SIRENE_BASE}/siren/${siren}`, {
-        headers: { "Authorization": `Bearer ${INSEE_SIRENE_API_KEY}`, "Accept": "application/json" },
+        headers: { "X-INSEE-Api-Key-Integration": INSEE_SIRENE_API_KEY, "Accept": "application/json" },
         signal: AbortSignal.timeout(15000),
       });
 
