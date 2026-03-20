@@ -105,12 +105,15 @@ async function enrichApiGouv(batchId: number, sirens: string[]) {
         { signal: AbortSignal.timeout(15000) }
       );
 
+      if (resp.status === 429) {
+        console.warn(`[API_GOUV] 429 rate limit, pause 5s...`);
+        await sleep(5000);
+        i--; // retry
+        continue;
+      }
+
       if (!resp.ok) {
         erreurs++;
-        if (resp.status === 429) {
-          console.warn(`[API_GOUV] 429 rate limit, pause 5s...`);
-          await sleep(5000);
-        }
         continue;
       }
 
