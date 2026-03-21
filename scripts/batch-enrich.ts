@@ -44,11 +44,14 @@ const TRANCHES_EFFECTIFS: Record<string, string> = {
 // ============================================================
 
 async function getAllProspectSirens(): Promise<string[]> {
+  // Include all 3 matches per serre (from serre_matches), not just the #1 match
   const rows = await sql`
-    SELECT DISTINCT s.siren
-    FROM serres s
-    WHERE s.siren IS NOT NULL AND s.siren != ''
-    ORDER BY s.siren
+    SELECT DISTINCT siren FROM (
+      SELECT siren FROM serres WHERE siren IS NOT NULL AND siren != ''
+      UNION
+      SELECT siren FROM serre_matches WHERE siren IS NOT NULL AND siren != ''
+    ) AS all_sirens
+    ORDER BY siren
   `;
   return rows.map((r) => r.siren);
 }
@@ -322,16 +325,48 @@ async function enrichBodacc(batchId: number, sirens: string[]) {
 
   let enrichis = skipped;
   let erreurs = 0;
+  let consecutiveErrors = 0;
 
   for (let i = 0; i < todo.length; i++) {
     const siren = todo[i].replace(/\s/g, "");
     try {
       const resp = await fetch(
         `https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/annonces-commerciales/records?where=registre%3D%22${siren}%22&order_by=dateparution%20desc&limit=20`,
-        { signal: AbortSignal.timeout(15000) }
+        { signal: AbortSignal.timeout(20000) }
       );
 
-      if (!resp.ok) { erreurs++; continue; }
+      // Rate limit handling — pause and retry
+      if (resp.status === 429) {
+        const retryAfter = resp.headers.get("retry-after");
+        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60000;
+        console.warn(`[BODACC] 429 rate limit at i=${i}, pause ${Math.round(waitMs / 1000)}s...`);
+        await sleep(waitMs);
+        i--; // retry same siren
+        continue;
+      }
+
+      if (!resp.ok) {
+        erreurs++;
+        consecutiveErrors++;
+        if (consecutiveErrors <= 3 || consecutiveErrors % 50 === 0) {
+          console.warn(`[BODACC] HTTP ${resp.status} pour siren=${siren} (${consecutiveErrors} erreurs consecutives)`);
+        }
+        // Slow down on consecutive errors
+        if (consecutiveErrors > 5) await sleep(5000);
+        if (consecutiveErrors > 100) {
+          console.error(`[BODACC] 100 erreurs consecutives, arret`);
+          break;
+        }
+        // Still mark as "processed" to avoid re-processing on next run
+        await sql`
+          INSERT INTO data_bodacc (batch_id, siren, procedures, depots_comptes, derniere_modification)
+          VALUES (${batchId}, ${siren}, null, null, null)
+          ON CONFLICT (batch_id, siren) DO NOTHING
+        `;
+        continue;
+      }
+
+      consecutiveErrors = 0;
       const json = await resp.json();
       const annonces = json.results || [];
 
@@ -352,36 +387,50 @@ async function enrichBodacc(batchId: number, sirens: string[]) {
         .slice(0, 5)
         .map((a: any) => ({ date: a.dateparution, type: a.familleavis_lib || a.typeavis_lib, details: a.modificationsgenerales || null }));
 
-      if (procedures.length > 0 || depots.length > 0 || modifications.length > 0) {
-        await sql`
-          INSERT INTO data_bodacc (batch_id, siren, procedures, depots_comptes, derniere_modification)
-          VALUES (
-            ${batchId}, ${siren},
-            ${procedures.length > 0 ? sql.json(procedures) : null},
-            ${depots.length > 0 ? sql.json(depots) : null},
-            ${modifications.length > 0 ? sql.json(modifications) : null}
-          ) ON CONFLICT (batch_id, siren) DO UPDATE SET
-            procedures = EXCLUDED.procedures, depots_comptes = EXCLUDED.depots_comptes,
-            derniere_modification = EXCLUDED.derniere_modification, enrichi_at = NOW()
-        `;
-        enrichis++;
-      }
+      // ALWAYS insert — even if no annonces found — so we don't re-process this SIREN next run
+      await sql`
+        INSERT INTO data_bodacc (batch_id, siren, procedures, depots_comptes, derniere_modification)
+        VALUES (
+          ${batchId}, ${siren},
+          ${procedures.length > 0 ? sql.json(procedures) : null},
+          ${depots.length > 0 ? sql.json(depots) : null},
+          ${modifications.length > 0 ? sql.json(modifications) : null}
+        ) ON CONFLICT (batch_id, siren) DO UPDATE SET
+          procedures = EXCLUDED.procedures, depots_comptes = EXCLUDED.depots_comptes,
+          derniere_modification = EXCLUDED.derniere_modification, enrichi_at = NOW()
+      `;
+      enrichis++;
 
       if ((i + 1) % 100 === 0) {
-        console.log(`[BODACC] Progression: ${i + 1}/${todo.length} (${enrichis} OK)`);
+        console.log(`[BODACC] Progression: ${i + 1}/${todo.length} (${enrichis} enrichis, ${erreurs} erreurs)`);
         await updateBatchApiStatus(batchId, "bodacc", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
-      if ((i + 1) % 10 === 0) await sleep(500);
+      // Rate limiting: ~10 req/s → pause every 10 requests
+      if ((i + 1) % 10 === 0) await sleep(1000);
 
     } catch (err) {
       erreurs++;
-      console.error(`[BODACC] Erreur siren=${siren}:`, err);
+      consecutiveErrors++;
+      console.error(`[BODACC] Erreur siren=${siren}:`, (err as Error).message || err);
+      // Insert empty row to mark as processed even on network error
+      try {
+        await sql`
+          INSERT INTO data_bodacc (batch_id, siren, procedures, depots_comptes, derniere_modification)
+          VALUES (${batchId}, ${siren}, null, null, null)
+          ON CONFLICT (batch_id, siren) DO NOTHING
+        `;
+      } catch {}
+      await sleep(2000);
+      if (consecutiveErrors > 100) {
+        console.error(`[BODACC] 100 erreurs consecutives (catch), arret`);
+        break;
+      }
     }
   }
 
   await updateBatchApiStatus(batchId, "bodacc", { statut: "done", nb_enrichis: enrichis, nb_erreurs: erreurs, completed_at: "now" });
-  console.log(`[BODACC] Termine: ${enrichis}/${sirens.length}`);  
+  console.log(`[BODACC] Termine: ${enrichis}/${sirens.length} enrichis, ${erreurs} erreurs`);
 }
 
 // ============================================================

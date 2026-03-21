@@ -243,7 +243,7 @@ export default function FicheDetail({
                                 <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-sm shrink-0">
                                   {(d.prenoms || d.prenom || "?").charAt(0)}{(d.nom || "?").charAt(0)}
                                 </div>
-                                <div className="min-w-0">
+                                <div className="min-w-0 flex-1">
                                   <p className="text-sm font-semibold text-gray-900">
                                     {`${d.prenoms || d.prenom || ""} ${d.nom || ""}`.trim() || "—"}
                                   </p>
@@ -253,6 +253,21 @@ export default function FicheDetail({
                                     {d.date_de_naissance && <span>Ne(e): {d.date_de_naissance}</span>}
                                     {d.annee_de_naissance && !d.date_de_naissance && <span>Annee: {d.annee_de_naissance}</span>}
                                   </div>
+                                  {/* Per-person contact info */}
+                                  {(d.telephone || d.email) && (
+                                    <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 pt-2 border-t border-gray-100">
+                                      {d.telephone && (
+                                        <a href={`tel:${d.telephone}`} className="text-[11px] text-blue-600 hover:underline flex items-center gap-1">
+                                          <span className="text-gray-400">Tel:</span> {d.telephone}
+                                        </a>
+                                      )}
+                                      {d.email && (
+                                        <a href={`mailto:${d.email}`} className="text-[11px] text-blue-600 hover:underline flex items-center gap-1">
+                                          <span className="text-gray-400">Email:</span> {d.email}
+                                        </a>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -288,23 +303,89 @@ export default function FicheDetail({
           {e && tab === "contact" && (
             <div className="space-y-1">
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Contact</p>
-              {e.telephone ? (
-                <Row
-                  label="Telephone"
-                  value={<a href={`tel:${e.telephone}`} className="text-blue-600 hover:underline">{e.telephone}</a>}
-                />
-              ) : (
-                <Row label="Telephone" value={<span className="text-gray-300">—</span>} />
-              )}
-              {e.site_web ? (
-                <Row
-                  label="Site web"
-                  value={<a href={e.site_web} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate max-w-[200px] inline-block">{e.site_web.replace(/^https?:\/\//, "")}</a>}
-                />
-              ) : (
-                <Row label="Site web" value={<span className="text-gray-300">—</span>} />
-              )}
-              <Row label="Email" value={e.email || <span className="text-gray-300">—</span>} />
+              {(() => {
+                // Cascade: company phone → dirigeant phone by hierarchy → employee phone
+                const QUALITE_PRIORITY: Record<string, number> = {
+                  "Gérant": 1, "Gerant": 1,
+                  "Président": 2, "President": 2,
+                  "Directeur général": 3, "Directeur general": 3,
+                  "Associé": 4, "Associe": 4,
+                  "Co-gérant": 5, "Co-gerant": 5,
+                };
+                const dirs = safeJsonArray(e.dirigeants_complet).length > 0
+                  ? safeJsonArray(e.dirigeants_complet)
+                  : safeJsonArray(e.dirigeants);
+                const physiques = dirs
+                  .filter((d: any) => d.type_dirigeant !== "personne morale")
+                  .sort((a: any, b: any) => (QUALITE_PRIORITY[a.qualite] || 99) - (QUALITE_PRIORITY[b.qualite] || 99));
+
+                // Find best phone: company first, then dirigeant cascade
+                let bestPhone = e.telephone || null;
+                let phoneOwner: string | null = null;
+
+                if (!bestPhone) {
+                  for (const d of physiques) {
+                    if (d.telephone) {
+                      bestPhone = d.telephone;
+                      phoneOwner = `${d.prenoms || d.prenom || ""} ${d.nom || ""}`.trim();
+                      break;
+                    }
+                  }
+                }
+
+                // Find best email: company first, then dirigeant cascade
+                let bestEmail = e.email || null;
+                let emailOwner: string | null = null;
+
+                if (!bestEmail) {
+                  for (const d of physiques) {
+                    if (d.email) {
+                      bestEmail = d.email;
+                      emailOwner = `${d.prenoms || d.prenom || ""} ${d.nom || ""}`.trim();
+                      break;
+                    }
+                  }
+                }
+
+                return (
+                  <>
+                    {bestPhone ? (
+                      <Row
+                        label="Telephone"
+                        value={
+                          <span>
+                            <a href={`tel:${bestPhone}`} className="text-blue-600 hover:underline">{bestPhone}</a>
+                            {phoneOwner && <span className="text-gray-400 text-[10px] ml-1">({phoneOwner})</span>}
+                          </span>
+                        }
+                      />
+                    ) : (
+                      <Row label="Telephone" value={<span className="text-gray-300">—</span>} />
+                    )}
+                    {e.site_web ? (
+                      <Row
+                        label="Site web"
+                        value={<a href={e.site_web} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline truncate max-w-[200px] inline-block">{e.site_web.replace(/^https?:\/\//, "")}</a>}
+                      />
+                    ) : (
+                      <Row label="Site web" value={<span className="text-gray-300">—</span>} />
+                    )}
+                    {bestEmail ? (
+                      <Row
+                        label="Email"
+                        value={
+                          <span>
+                            <a href={`mailto:${bestEmail}`} className="text-blue-600 hover:underline">{bestEmail}</a>
+                            {emailOwner && <span className="text-gray-400 text-[10px] ml-1">({emailOwner})</span>}
+                          </span>
+                        }
+                      />
+                    ) : (
+                      <Row label="Email" value={<span className="text-gray-300">—</span>} />
+                    )}
+                  </>
+                );
+              })()}
 
               <div className="h-3" />
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Localisation siege</p>

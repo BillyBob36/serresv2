@@ -82,6 +82,10 @@ export default function Parametres() {
   const [batchLoading, setBatchLoading] = useState(false);
   const [creatingBatch, setCreatingBatch] = useState(false);
 
+  // CSV upload state
+  const [uploading, setUploading] = useState<string | null>(null);
+  const [uploadResult, setUploadResult] = useState<{ source: string; inserted: number; skipped: number; errors: number } | null>(null);
+
   const fetchFreshness = useCallback(async () => {
     try {
       const resp = await fetch(`${API}/api/settings/freshness`);
@@ -171,6 +175,44 @@ export default function Parametres() {
       await fetch(`${API}/api/batch/${batchId}`, { method: "DELETE" });
       setSelectedBatch(null);
       fetchBatches();
+    } catch { setError("Erreur reseau"); }
+  };
+
+  const uploadCSV = async (batchId: number, source: "google_places" | "pages_jaunes", file: File) => {
+    setUploading(source);
+    setUploadResult(null);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("source", source);
+      const resp = await fetch(`${API}/api/batch/${batchId}/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      const json = await resp.json();
+      if (!resp.ok) { setError(json.error || "Erreur upload"); return; }
+      setUploadResult({ source, inserted: json.inserted, skipped: json.skipped, errors: json.errors });
+      fetchBatchDetail(batchId, true);
+    } catch { setError("Erreur reseau lors de l'upload"); }
+    finally { setUploading(null); }
+  };
+
+  const exportQueries = async (batchId: number, type: "google" | "pj") => {
+    try {
+      const resp = await fetch(`${API}/api/batch/${batchId}/export-queries?type=${type}`);
+      if (!resp.ok) {
+        const json = await resp.json().catch(() => ({}));
+        setError(json.error || "Erreur export");
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = type === "google" ? `queries_google_batch_${batchId}.txt` : `prospects_pj_batch_${batchId}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
     } catch { setError("Erreur reseau"); }
   };
 
@@ -374,6 +416,14 @@ export default function Parametres() {
                   <span className="text-xs text-blue-600">Chargement...</span>
                 </div>
 
+                {/* Upload result banner */}
+                {uploadResult && (
+                  <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+                    <span className="font-medium">Import {uploadResult.source === "google_places" ? "Google" : "PJ"} termine :</span>{" "}
+                    {uploadResult.inserted} importes, {uploadResult.skipped} ignores, {uploadResult.errors} erreurs
+                  </div>
+                )}
+
                 <div className="space-y-3">
                   {(selectedBatch.apis || []).map((api) => {
                     const info = API_LABELS[api.api_name] || { label: api.api_name, icon: "", color: "gray" };
@@ -381,6 +431,7 @@ export default function Parametres() {
                     const isDone = api.statut === "done";
                     const isError = api.statut === "error";
                     const pct = api.nb_total > 0 ? Math.round((api.nb_enrichis / api.nb_total) * 100) : 0;
+                    const hasExternalScraper = api.api_name === "google_places" || api.api_name === "pages_jaunes";
 
                     return (
                       <div key={api.api_name} className="border border-gray-100 rounded-lg p-4">
@@ -406,24 +457,69 @@ export default function Parametres() {
                               {isError && <p className="text-[11px] text-red-500">Erreur</p>}
                             </div>
                           </div>
-                          <button
-                            onClick={() => triggerEnrich(selectedBatch.id, api.api_name)}
-                            disabled={isRunning}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                              isDone
-                                ? "bg-green-50 text-green-700 hover:bg-green-100 border border-green-200"
-                                : isRunning
-                                  ? "bg-blue-50 text-blue-400 cursor-not-allowed"
-                                  : "bg-blue-600 text-white hover:bg-blue-700"
-                            }`}
-                          >
-                            {isRunning ? (
-                              <span className="flex items-center gap-1.5">
-                                <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                                En cours...
-                              </span>
-                            ) : isDone ? "Re-enrichir" : "Enrichir"}
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {/* Export + Upload buttons for Google Places and Pages Jaunes */}
+                            {hasExternalScraper && (
+                              <>
+                                <button
+                                  onClick={() => exportQueries(
+                                    selectedBatch.id,
+                                    api.api_name === "google_places" ? "google" : "pj"
+                                  )}
+                                  className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200 transition"
+                                  title={api.api_name === "google_places" ? "Exporter queries.txt pour gosom" : "Exporter prospects.csv pour PJ scraper"}
+                                >
+                                  Export
+                                </button>
+                                <label
+                                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition ${
+                                    uploading === api.api_name
+                                      ? "bg-purple-50 text-purple-400 cursor-not-allowed"
+                                      : "bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200"
+                                  }`}
+                                  title={api.api_name === "google_places" ? "Importer CSV gosom" : "Importer CSV PJ scraper"}
+                                >
+                                  {uploading === api.api_name ? (
+                                    <span className="flex items-center gap-1">
+                                      <span className="w-3 h-3 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                                      Import...
+                                    </span>
+                                  ) : "Upload CSV"}
+                                  <input
+                                    type="file"
+                                    accept=".csv"
+                                    className="hidden"
+                                    disabled={uploading === api.api_name}
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        uploadCSV(selectedBatch.id, api.api_name as "google_places" | "pages_jaunes", file);
+                                      }
+                                      e.target.value = "";
+                                    }}
+                                  />
+                                </label>
+                              </>
+                            )}
+                            <button
+                              onClick={() => triggerEnrich(selectedBatch.id, api.api_name)}
+                              disabled={isRunning}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                                isDone
+                                  ? "bg-green-50 text-green-700 hover:bg-green-100 border border-green-200"
+                                  : isRunning
+                                    ? "bg-blue-50 text-blue-400 cursor-not-allowed"
+                                    : "bg-blue-600 text-white hover:bg-blue-700"
+                              }`}
+                            >
+                              {isRunning ? (
+                                <span className="flex items-center gap-1.5">
+                                  <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                                  En cours...
+                                </span>
+                              ) : isDone ? "Re-enrichir" : "Enrichir"}
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );

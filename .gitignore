@@ -48,3 +48,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# tools scrapers
+tools/*/node_modules/
+tools/*/storage/
+tools/*/*.csv
+tools/*/.google_checkpoint.json
+tools/*/.pj_checkpoint.json

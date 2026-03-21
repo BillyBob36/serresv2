@@ -13,7 +13,9 @@
     "pipeline": "npx tsx scripts/import-rpg.ts && npx tsx scripts/import-entreprises.ts && npx tsx scripts/match-serres.ts",
     "import:bdnb": "npx tsx scripts/import-bdnb.ts",
     "import:bdnb:test": "npx tsx scripts/import-bdnb.ts --dept 84",
-    "scan:osm": "npx tsx scripts/scan-osm-serres.ts"
+    "scan:osm": "npx tsx scripts/scan-osm-serres.ts",
+    "export:google": "npx tsx scripts/export-google-queries.ts",
+    "export:pj": "npx tsx scripts/export-prospects-csv.ts"
   },
   "dependencies": {
     "dotenv": "^17.3.1",
