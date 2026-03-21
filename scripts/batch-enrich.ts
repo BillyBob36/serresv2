@@ -293,9 +293,8 @@ async function enrichInsee(batchId: number, sirens: string[]) {
         await updateBatchApiStatus(batchId, "insee", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
-      // INSEE rate limit: ~30 req/min → 2s par requete + pause toutes les 25
-      if ((i + 1) % 25 === 0) await sleep(60000);
-      else await sleep(2000);
+      // INSEE rate limit: ~30 req/min → 2.5s par requete (24 req/min, safe margin)
+      await sleep(2500);
 
     } catch (err) {
       erreurs++;
