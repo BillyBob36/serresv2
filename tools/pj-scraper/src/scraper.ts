@@ -42,6 +42,7 @@ export interface ScrapeResult {
 interface Prospect {
   siren: string;
   nom: string;
+  nomsAlternatifs: string[];
   commune: string;
   departement: string;
   dirigeants: string[];
@@ -242,8 +243,10 @@ export async function runScraper(
         throw new Error("CAPTCHA detected — will retry");
       }
 
-      if (request.label === "search" || request.label === "search_dirigeant") {
+      if (request.label === "search" || request.label === "search_altname" || request.label === "search_dirigeant") {
         const isDirigeantSearch = request.label === "search_dirigeant";
+        const isAltNameSearch = request.label === "search_altname";
+        const altNameIdx = (request.userData as any).altNameIdx || 0;
 
         // Wait for results to load
         try {
@@ -265,10 +268,32 @@ export async function runScraper(
           })()
         `);
 
-        if (noResults) {
-          // If company search failed and there are dirigeants to try, enqueue dirigeant searches
+        // Helper: enqueue next fallback level (alt names → dirigeants → give up)
+        async function enqueueFallback(reason: string): Promise<boolean> {
+          // Level 1: try alternative names (nom_raison_sociale, sigle, historical...)
+          if (!isDirigeantSearch && !isAltNameSearch && prospect.nomsAlternatifs && prospect.nomsAlternatifs.length > 0) {
+            log.info(`${reason} "${prospect.nom}", trying ${prospect.nomsAlternatifs.length} alt name(s)...`);
+            for (let ai = 0; ai < prospect.nomsAlternatifs.length; ai++) {
+              const altName = prospect.nomsAlternatifs[ai];
+              const encodedName = encodeURIComponent(altName);
+              const encodedCity = encodeURIComponent(prospect.commune);
+              await queue.addRequest({
+                url: `https://www.pagesjaunes.fr/annuaire/chercherlespros?quoiqui=${encodedName}&ou=${encodedCity}`,
+                label: "search_altname",
+                uniqueKey: `alt-${prospect.siren}-${ai}`,
+                userData: { prospectIndex, prospect, altNameIdx: ai },
+              });
+            }
+            return true;
+          }
+          // Level 1b: if current alt name failed, try remaining alt names
+          if (isAltNameSearch && altNameIdx + 1 < (prospect.nomsAlternatifs?.length || 0)) {
+            // Already queued all alt names at once — they'll be processed naturally
+            return true; // let the other alt name requests run
+          }
+          // Level 2: try dirigeant names
           if (!isDirigeantSearch && prospect.dirigeants && prospect.dirigeants.length > 0) {
-            log.info(`No results for company "${prospect.nom}", trying ${prospect.dirigeants.length} dirigeant(s)...`);
+            log.info(`${reason}, trying ${prospect.dirigeants.length} dirigeant(s)...`);
             for (const dirName of prospect.dirigeants) {
               const encodedName = encodeURIComponent(dirName);
               const encodedCity = encodeURIComponent(prospect.commune);
@@ -279,9 +304,14 @@ export async function runScraper(
                 userData: { prospectIndex, prospect, sourcePersonne: dirName },
               });
             }
-            resetBlocks();
-            return;
+            return true;
           }
+          return false; // no more fallbacks
+        }
+
+        if (noResults) {
+          const hadFallback = await enqueueFallback("No results for");
+          if (hadFallback) { resetBlocks(); return; }
 
           notFound++;
           completed++;
@@ -301,22 +331,8 @@ export async function runScraper(
         const results = await parseSearchResults(page);
 
         if (results.length === 0) {
-          // Same fallback to dirigeant search
-          if (!isDirigeantSearch && prospect.dirigeants && prospect.dirigeants.length > 0) {
-            log.info(`Empty results for company "${prospect.nom}", trying dirigeant(s)...`);
-            for (const dirName of prospect.dirigeants) {
-              const encodedName = encodeURIComponent(dirName);
-              const encodedCity = encodeURIComponent(prospect.commune);
-              await queue.addRequest({
-                url: `https://www.pagesjaunes.fr/annuaire/chercherlespros?quoiqui=${encodedName}&ou=${encodedCity}`,
-                label: "search_dirigeant",
-                uniqueKey: `dir-${prospect.siren}-${dirName}`,
-                userData: { prospectIndex, prospect, sourcePersonne: dirName },
-              });
-            }
-            resetBlocks();
-            return;
-          }
+          const hadFallback = await enqueueFallback("Empty results for");
+          if (hadFallback) { resetBlocks(); return; }
 
           notFound++;
           completed++;
@@ -405,19 +421,9 @@ export async function runScraper(
           });
           resetBlocks();
         } else {
-          // No good match — try dirigeant fallback if this was a company search
-          if (!isDirigeantSearch && prospect.dirigeants && prospect.dirigeants.length > 0) {
-            log.info(`No good match for "${prospect.nom}", trying dirigeant(s)...`);
-            for (const dirName of prospect.dirigeants) {
-              const encodedName = encodeURIComponent(dirName);
-              const encodedCity = encodeURIComponent(prospect.commune);
-              await queue.addRequest({
-                url: `https://www.pagesjaunes.fr/annuaire/chercherlespros?quoiqui=${encodedName}&ou=${encodedCity}`,
-                label: "search_dirigeant",
-                uniqueKey: `dir-${prospect.siren}-${dirName}`,
-                userData: { prospectIndex, prospect, sourcePersonne: dirName },
-              });
-            }
+          // No good match — try alt names then dirigeant fallback
+          const hadFallback = await enqueueFallback(`No good match for "${prospect.nom}"`);
+          if (hadFallback) {
             resetBlocks();
           } else {
             notFound++;

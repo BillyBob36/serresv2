@@ -40,6 +40,7 @@ function parseArgs(): { input: string; output: string } {
 interface Prospect {
   siren: string;
   nom: string;
+  nomsAlternatifs: string[];
   commune: string;
   departement: string;
   dirigeants: string[];
@@ -57,6 +58,7 @@ function loadProspects(csvPath: string): Prospect[] {
   return records.map((r: any) => ({
     siren: r.siren || "",
     nom: r.nom || r.nom_complet || "",
+    nomsAlternatifs: (r.noms_alternatifs || "").split("|").map((n: string) => n.trim()).filter((n: string) => n.length > 3),
     commune: r.commune || r.libelle_commune_siege || "",
     departement: r.departement || "",
     dirigeants: (r.dirigeants || "").split("|").map((n: string) => n.trim()).filter((n: string) => n.length > 3),

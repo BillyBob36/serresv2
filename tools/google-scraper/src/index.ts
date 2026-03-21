@@ -31,7 +31,7 @@ const rawLines = readFileSync(absInput, 'utf-8')
   .map(l => l.trim())
   .filter(l => l.length > 0);
 
-// Parse siren|query format
+// Parse siren|query format — may have multiple lines per SIREN (name variants)
 const lines = rawLines.map(l => {
   const pipeIdx = l.indexOf('|');
   if (pipeIdx > 0) {
@@ -40,20 +40,46 @@ const lines = rawLines.map(l => {
   return { siren: '', text: l };
 }).filter(l => l.text.length > 3);
 
+// Group by SIREN: first line = primary query, rest = fallback variants
+const sirenGroups = new Map<string, { siren: string; text: string }[]>();
+const noSirenLines: { siren: string; text: string }[] = [];
+for (const l of lines) {
+  if (l.siren) {
+    if (!sirenGroups.has(l.siren)) sirenGroups.set(l.siren, []);
+    sirenGroups.get(l.siren)!.push(l);
+  } else {
+    noSirenLines.push(l);
+  }
+}
+
+// Build deduplicated query list: one entry per SIREN with fallback variants
+const deduped: { siren: string; text: string; variants: string[] }[] = [];
+for (const [siren, group] of sirenGroups) {
+  deduped.push({
+    siren,
+    text: group[0].text,
+    variants: group.slice(1).map(g => g.text),
+  });
+}
+for (const l of noSirenLines) {
+  deduped.push({ siren: l.siren, text: l.text, variants: [] });
+}
+
+const totalVariants = deduped.reduce((sum, d) => sum + 1 + d.variants.length, 0);
 console.log(`\n=== Google Maps Scraper ===`);
-console.log(`Input: ${absInput} (${lines.length} queries)`);
+console.log(`Input: ${absInput} (${deduped.length} entreprises, ${totalVariants} queries avec variantes)`);
 console.log(`Output: ${absOutput}`);
 console.log(`Concurrency: ${concurrency} tabs`);
 console.log(`Email extraction: ${noEmails ? 'off' : 'on'}`);
 
 // Resume from checkpoint
 const checkpoint = loadCheckpoint();
-const queries = lines
-  .map((l, i) => ({ index: i, text: l.text, siren: l.siren }))
+const queries = deduped
+  .map((l, i) => ({ index: i, text: l.text, siren: l.siren, variants: l.variants }))
   .filter(q => q.index >= checkpoint);
 
 if (checkpoint > 0) {
-  console.log(`Resuming from checkpoint: ${checkpoint} (${lines.length - checkpoint} remaining)`);
+  console.log(`Resuming from checkpoint: ${checkpoint} (${deduped.length - checkpoint} remaining)`);
 }
 
 console.log(`\nStarting in 3 seconds... (Ctrl+C to stop)\n`);
@@ -85,12 +111,13 @@ const stats = await scrapeGoogleMaps(queries, {
 });
 
 closeOutput();
-saveCheckpoint(lines.length);
+saveCheckpoint(deduped.length);
 
 const duration = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
 console.log(`\n\n=== Finished ===`);
 console.log(`Duration: ${duration} min`);
 console.log(`Results: ${stats.completed} found, ${stats.notFound} not found, ${stats.errors} errors`);
 console.log(`Emails extracted: ${stats.emailsFound}`);
-console.log(`Coverage: ${((stats.completed / lines.length) * 100).toFixed(1)}%`);
+console.log(`Found via fallback name: ${stats.foundViaFallback || 0}`);
+console.log(`Coverage: ${((stats.completed / deduped.length) * 100).toFixed(1)}%`);
 console.log(`Output: ${absOutput}`);

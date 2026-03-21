@@ -436,6 +436,110 @@ async function enrichBodacc(batchId: number, sirens: string[]) {
 // ============================================================
 // Google Places enrichissement
 // ============================================================
+/** Strip legal form prefixes/suffixes from company name for better Google search */
+function stripFormeJuridique(name: string): string {
+  const formes = [
+    "sarl", "sas", "sasu", "sa", "eurl", "earl", "gaec", "gfa", "sci", "sci",
+    "scea", "gie", "snc", "selarl", "scp", "cooperative", "cuma",
+    "exploitation agricole", "societe civile", "groupement agricole",
+  ];
+  let cleaned = name;
+  for (const forme of formes) {
+    // Remove at start: "SARL Les Serres" → "Les Serres"
+    cleaned = cleaned.replace(new RegExp(`^${forme}\\s+`, "i"), "");
+    // Remove at end: "Les Serres SARL" → "Les Serres"
+    cleaned = cleaned.replace(new RegExp(`\\s+${forme}$`, "i"), "");
+  }
+  return cleaned.trim();
+}
+
+/** Build list of unique name variants to try on Google, best first */
+function buildNameVariants(gouv: any, enrich: any, serre: any, inseeHistorique: any[] | null): string[] {
+  const seen = new Set<string>();
+  const variants: string[] = [];
+
+  function add(name: string | null | undefined) {
+    if (!name || name.trim().length < 4) return;
+    const key = name.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    if (seen.has(key)) return;
+    seen.add(key);
+    variants.push(name.trim());
+  }
+
+  // 1. nom_complet (le plus fiable)
+  add(gouv?.nom_complet);
+  add(enrich?.nom_complet);
+
+  // 2. nom_raison_sociale (souvent sans statut juridique)
+  add(gouv?.nom_raison_sociale);
+  add(enrich?.nom_raison_sociale);
+
+  // 3. nom_complet sans forme juridique (SARL, SAS, EARL...)
+  if (gouv?.nom_complet) {
+    const stripped = stripFormeJuridique(gouv.nom_complet);
+    if (stripped !== gouv.nom_complet) add(stripped);
+  }
+
+  // 4. sigle (si l'entreprise est connue par son acronyme)
+  add(gouv?.sigle);
+  add(enrich?.sigle);
+
+  // 5. nom_entreprise from serres (RPG import, can differ)
+  add(serre?.nom_entreprise);
+
+  // 6. anciennes denominations depuis INSEE periodes_historique
+  if (inseeHistorique && Array.isArray(inseeHistorique)) {
+    for (const p of inseeHistorique) {
+      if (p.denomination) add(p.denomination);
+    }
+  }
+
+  return variants;
+}
+
+/** Try a Google Places text search and return the best validated place or null */
+async function tryGoogleSearch(
+  textQuery: string,
+  expectedName: string,
+  lat: number | null,
+  lon: number | null
+): Promise<any | null> {
+  const searchBody: any = { textQuery };
+  if (lat && lon) {
+    searchBody.locationBias = { circle: { center: { latitude: Number(lat), longitude: Number(lon) }, radius: 5000.0 } };
+  }
+
+  const findResp = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+      "X-Goog-FieldMask": "places.id,places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.regularOpeningHours,places.businessStatus,places.formattedAddress,places.googleMapsUri,places.types,places.primaryType,places.primaryTypeDisplayName",
+    },
+    body: JSON.stringify(searchBody),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (findResp.status === 429) throw new Error("RATE_LIMIT");
+  if (!findResp.ok) return null;
+
+  const findJson = await findResp.json();
+  const place = findJson.places?.[0];
+  if (!place) return null;
+
+  // Validation similarity — compare against the name variant we searched for
+  const placeName = normalize(place.displayName?.text || "");
+  const expected = normalize(expectedName);
+  const placeTokens = placeName.split(/\s+/).filter((t: string) => t.length > 2);
+  const expectedTokens = expected.split(/\s+/).filter((t: string) => t.length > 2);
+  const commonTokens = placeTokens.filter((t: string) => expectedTokens.some((e: string) => e.includes(t) || t.includes(e)));
+  const similarity = expectedTokens.length > 0 ? commonTokens.length / expectedTokens.length : 0;
+
+  if (similarity < 0.3 && expectedTokens.length > 0) return null;
+
+  return place;
+}
+
 async function enrichGooglePlaces(batchId: number, sirens: string[]) {
   if (!GOOGLE_PLACES_API_KEY) {
     console.error("[GOOGLE] Cle API manquante, abandon");
@@ -451,18 +555,37 @@ async function enrichGooglePlaces(batchId: number, sirens: string[]) {
 
   let enrichis = skipped;
   let erreurs = 0;
+  let totalApiCalls = 0;
+  let foundViaFallback = 0;
 
-  // Get company names from data_api_gouv (same batch) or enrichissement_entreprise
+  // Get company names from data_api_gouv (same batch) — includes nom_raison_sociale, sigle
   const gouvRows = await sql`
-    SELECT siren, nom_complet, libelle_commune_siege, latitude_siege, longitude_siege
+    SELECT siren, nom_complet, nom_raison_sociale, sigle,
+           libelle_commune_siege, latitude_siege, longitude_siege
     FROM data_api_gouv WHERE batch_id = ${batchId}
   `;
   const gouvMap = new Map<string, any>();
   for (const r of gouvRows) gouvMap.set(r.siren, r);
 
+  // Get INSEE historical denominations
+  const inseeRows = await sql`
+    SELECT siren, periodes_historique
+    FROM data_insee WHERE batch_id = ${batchId} AND periodes_historique IS NOT NULL
+  `;
+  const inseeMap = new Map<string, any[]>();
+  for (const r of inseeRows) {
+    try {
+      const hist = typeof r.periodes_historique === "string"
+        ? JSON.parse(r.periodes_historique)
+        : r.periodes_historique;
+      if (Array.isArray(hist)) inseeMap.set(r.siren, hist);
+    } catch { /* ignore */ }
+  }
+
   // Fallback from enrichissement_entreprise
   const enrichRows = await sql`
-    SELECT siren, nom_complet, libelle_commune_siege, latitude_siege, longitude_siege
+    SELECT siren, nom_complet, nom_raison_sociale, sigle,
+           libelle_commune_siege, latitude_siege, longitude_siege
     FROM enrichissement_entreprise
   `;
   const enrichMap = new Map<string, any>();
@@ -476,57 +599,52 @@ async function enrichGooglePlaces(batchId: number, sirens: string[]) {
   const serreMap = new Map<string, any>();
   for (const r of serreRows) serreMap.set(r.siren, r);
 
+  console.log(`[GOOGLE] Donnees chargees: ${gouvMap.size} API Gouv, ${inseeMap.size} INSEE historiques, ${enrichMap.size} enrichissement, ${serreMap.size} serres`);
+
   for (let i = 0; i < todo.length; i++) {
     const siren = todo[i];
     const gouv = gouvMap.get(siren);
     const enrich = enrichMap.get(siren);
     const serre = serreMap.get(siren);
+    const inseeHist = inseeMap.get(siren) || null;
 
-    const nomPourGoogle = gouv?.nom_complet || enrich?.nom_complet || serre?.nom_entreprise;
-    if (!nomPourGoogle) { erreurs++; continue; }
+    // Build all name variants to try
+    const nameVariants = buildNameVariants(gouv, enrich, serre, inseeHist);
+    if (nameVariants.length === 0) { erreurs++; continue; }
 
     const commune = gouv?.libelle_commune_siege || enrich?.libelle_commune_siege || "";
-    const textQuery = commune ? `${nomPourGoogle} ${commune}` : nomPourGoogle;
     const lat = gouv?.latitude_siege || enrich?.latitude_siege || serre?.centroid_lat;
     const lon = gouv?.longitude_siege || enrich?.longitude_siege || serre?.centroid_lon;
 
+    let place: any = null;
+    let usedVariantIdx = -1;
+
     try {
-      const searchBody: any = { textQuery };
-      if (lat && lon) {
-        searchBody.locationBias = { circle: { center: { latitude: Number(lat), longitude: Number(lon) }, radius: 5000.0 } };
+      // Try each name variant until we find a valid match
+      for (let v = 0; v < nameVariants.length; v++) {
+        const variant = nameVariants[v];
+        const textQuery = commune ? `${variant} ${commune}` : variant;
+
+        totalApiCalls++;
+        place = await tryGoogleSearch(textQuery, variant, lat, lon);
+
+        if (place) {
+          usedVariantIdx = v;
+          break;
+        }
+
+        // Rate limit between attempts
+        await sleep(500);
       }
 
-      const findResp = await fetch("https://places.googleapis.com/v1/places:searchText", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-          "X-Goog-FieldMask": "places.id,places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.regularOpeningHours,places.businessStatus,places.formattedAddress,places.googleMapsUri,places.types,places.primaryType,places.primaryTypeDisplayName",
-        },
-        body: JSON.stringify(searchBody),
-        signal: AbortSignal.timeout(15000),
-      });
-
-      if (findResp.status === 429) {
-        console.warn("[GOOGLE] 429 rate limit, arret pour ce mois");
-        break;
-      }
-
-      if (!findResp.ok) { erreurs++; continue; }
-
-      const findJson = await findResp.json();
-      const place = findJson.places?.[0];
       if (!place) { erreurs++; continue; }
 
-      // Validation similarity
-      const placeName = (place.displayName?.text || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      const expectedName = (nomPourGoogle || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      const placeTokens = placeName.split(/\s+/).filter((t: string) => t.length > 2);
-      const expectedTokens = expectedName.split(/\s+/).filter((t: string) => t.length > 2);
-      const commonTokens = placeTokens.filter((t: string) => expectedTokens.some((e: string) => e.includes(t) || t.includes(e)));
-      const similarity = expectedTokens.length > 0 ? commonTokens.length / expectedTokens.length : 0;
-
-      if (similarity < 0.3 && expectedTokens.length > 0) { erreurs++; continue; }
+      if (usedVariantIdx > 0) {
+        foundViaFallback++;
+        if (foundViaFallback <= 20 || foundViaFallback % 50 === 0) {
+          console.log(`[GOOGLE] siren=${siren} trouve via variante #${usedVariantIdx + 1}: "${nameVariants[usedVariantIdx]}" (pas trouve avec "${nameVariants[0]}")`);
+        }
+      }
 
       await sql`
         INSERT INTO data_google_places (
@@ -550,21 +668,25 @@ async function enrichGooglePlaces(batchId: number, sirens: string[]) {
 
       enrichis++;
       if ((i + 1) % 50 === 0) {
-        console.log(`[GOOGLE] Progression: ${i + 1}/${todo.length} (${enrichis} OK)`);
+        console.log(`[GOOGLE] Progression: ${i + 1}/${todo.length} (${enrichis} OK, ${erreurs} err, ${totalApiCalls} appels API, ${foundViaFallback} via fallback)`);
         await updateBatchApiStatus(batchId, "google_places", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
-      // Respect 5000/month free tier → pace requests
+      // Rate limit between companies
       await sleep(1000);
 
     } catch (err) {
+      if ((err as Error).message === "RATE_LIMIT") {
+        console.warn("[GOOGLE] 429 rate limit, arret pour ce mois");
+        break;
+      }
       erreurs++;
       console.error(`[GOOGLE] Erreur siren=${siren}:`, err);
     }
   }
 
   await updateBatchApiStatus(batchId, "google_places", { statut: "done", nb_enrichis: enrichis, nb_erreurs: erreurs, completed_at: "now" });
-  console.log(`[GOOGLE] Termine: ${enrichis}/${sirens.length}`);
+  console.log(`[GOOGLE] Termine: ${enrichis}/${sirens.length} enrichis, ${erreurs} erreurs, ${totalApiCalls} appels API total, ${foundViaFallback} trouves via nom alternatif`);
 }
 
 // ============================================================
@@ -638,11 +760,11 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
   const sirenSet = new Set(todoSirens);
 
   const gouvData = await sql`
-    SELECT siren, nom_complet, libelle_commune_siege, code_postal_siege
+    SELECT siren, nom_complet, nom_raison_sociale, sigle, libelle_commune_siege, code_postal_siege
     FROM data_api_gouv WHERE batch_id = ${batchId}
   `;
 
-  // Map: normalized_name → siren
+  // Map: normalized_name → siren (includes all name variants for better matching)
   const nameToSiren = new Map<string, string>();
   // Map: code_postal → [{ siren, name }]
   const cpToEntries = new Map<string, { siren: string; name: string }[]>();
@@ -653,8 +775,16 @@ async function enrichPagesJaunes(batchId: number, sirens: string[]) {
 
   for (const r of gouvData) {
     if (!r.siren || !sirenSet.has(r.siren)) continue;
+    // Register ALL name variants for matching
     const name = normalize(r.nom_complet || "");
     if (name.length > 3) nameToSiren.set(name, r.siren);
+    const raisonSociale = normalize(r.nom_raison_sociale || "");
+    if (raisonSociale.length > 3 && raisonSociale !== name) nameToSiren.set(raisonSociale, r.siren);
+    const sigle = normalize(r.sigle || "");
+    if (sigle.length > 2 && sigle !== name) nameToSiren.set(sigle, r.siren);
+    // Also register the name stripped of legal form
+    const stripped = normalize(stripFormeJuridique(r.nom_complet || ""));
+    if (stripped.length > 3 && stripped !== name) nameToSiren.set(stripped, r.siren);
     if (r.code_postal_siege) {
       const cp = String(r.code_postal_siege).substring(0, 5);
       const dep = cp.substring(0, 2);

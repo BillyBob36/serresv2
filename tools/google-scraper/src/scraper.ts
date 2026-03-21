@@ -16,6 +16,7 @@ interface Query {
   index: number;
   text: string;
   siren: string;
+  variants: string[];
 }
 
 interface ScrapeStats {
@@ -23,6 +24,7 @@ interface ScrapeStats {
   notFound: number;
   errors: number;
   emailsFound: number;
+  foundViaFallback: number;
 }
 
 let consecutiveErrors = 0;
@@ -32,16 +34,25 @@ export async function scrapeGoogleMaps(
   queries: Query[],
   options: { extractEmails: boolean; concurrency: number; debug?: boolean; onProgress?: (stats: ScrapeStats) => void }
 ): Promise<ScrapeStats> {
-  const stats: ScrapeStats = { completed: 0, notFound: 0, errors: 0, emailsFound: 0 };
+  const stats: ScrapeStats = { completed: 0, notFound: 0, errors: 0, emailsFound: 0, foundViaFallback: 0 };
   const requestQueue = await RequestQueue.open('google-maps-queue');
 
-  // Add all queries to the queue
+  // Track which SIRENs already found a result (skip remaining variants)
+  const foundSirens = new Set<string>();
+
+  // Add all primary queries to the queue
   for (const q of queries) {
     const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(q.text)}?hl=fr`;
     await requestQueue.addRequest({
       url: searchUrl,
-      uniqueKey: `google-${q.index}`,
-      userData: { query: q.text, index: q.index, siren: q.siren },
+      uniqueKey: `google-${q.index}-v0`,
+      userData: {
+        query: q.text,
+        index: q.index,
+        siren: q.siren,
+        variantIdx: 0,
+        variants: q.variants,
+      },
     });
   }
 
@@ -105,15 +116,44 @@ export async function scrapeGoogleMaps(
       },
     ],
     requestHandler: async ({ page, request, log }) => {
-      const { query, index, siren } = request.userData as { query: string; index: number; siren: string };
-      log.info(`[${stats.completed + stats.notFound + stats.errors + 1}/${queries.length}] Scraping: ${query}`);
+      const { query, index, siren, variantIdx, variants } = request.userData as {
+        query: string; index: number; siren: string; variantIdx: number; variants: string[];
+      };
 
-      // Parse results (cookie handling is inside parseSearchResults)
+      // Skip if this SIREN was already found via an earlier variant
+      if (siren && foundSirens.has(siren)) {
+        log.info(`[skip] SIREN ${siren} already found, skipping variant #${variantIdx}`);
+        return;
+      }
+
+      const totalDone = stats.completed + stats.notFound + stats.errors;
+      log.info(`[${totalDone + 1}/${queries.length}] Scraping: ${query}${variantIdx > 0 ? ` (variante #${variantIdx + 1})` : ''}`);
+
+      // Parse results
       const result = await parseSearchResults(page, query);
 
       if (!result || !result.title) {
+        // Not found — try next name variant if available
+        if (variants && variantIdx < variants.length) {
+          const nextVariant = variants[variantIdx];
+          const nextUrl = `https://www.google.com/maps/search/${encodeURIComponent(nextVariant)}?hl=fr`;
+          log.info(`  → Pas trouvé avec "${query}", essai variante #${variantIdx + 2}: "${nextVariant}"`);
+          await requestQueue.addRequest({
+            url: nextUrl,
+            uniqueKey: `google-${index}-v${variantIdx + 1}`,
+            userData: {
+              query: nextVariant,
+              index,
+              siren,
+              variantIdx: variantIdx + 1,
+              variants,
+            },
+          });
+          return; // Don't count as notFound yet
+        }
+
         stats.notFound++;
-        log.warning(`No result for: ${query}`);
+        log.warning(`No result for: ${query} (${variants.length > 0 ? `tried ${variantIdx + 1} variants` : 'no variants'})`);
         consecutiveErrors = 0;
         saveCheckpoint(index);
         options.onProgress?.(stats);
@@ -131,6 +171,15 @@ export async function scrapeGoogleMaps(
         } catch { /* ignore email extraction errors */ }
       }
 
+      // Mark SIREN as found
+      if (siren) foundSirens.add(siren);
+
+      // Track fallback success
+      if (variantIdx > 0) {
+        stats.foundViaFallback++;
+        log.info(`  ✓ Trouvé via variante #${variantIdx + 1} pour SIREN ${siren}`);
+      }
+
       // Add siren to result and write to CSV
       (result as any).siren = siren;
       appendRow(result as unknown as Record<string, string>);
@@ -145,8 +194,24 @@ export async function scrapeGoogleMaps(
       options.onProgress?.(stats);
     },
     failedRequestHandler: async ({ request, log }) => {
-      const { query, index, siren } = request.userData as { query: string; index: number; siren: string };
+      const { query, index, siren, variantIdx, variants } = request.userData as {
+        query: string; index: number; siren: string; variantIdx: number; variants: string[];
+      };
       log.error(`Failed after retries: ${query}`);
+
+      // Try next variant on failure too
+      if (variants && variantIdx < variants.length && siren && !foundSirens.has(siren)) {
+        const nextVariant = variants[variantIdx];
+        const nextUrl = `https://www.google.com/maps/search/${encodeURIComponent(nextVariant)}?hl=fr`;
+        log.info(`  → Echec, essai variante #${variantIdx + 2}: "${nextVariant}"`);
+        await requestQueue.addRequest({
+          url: nextUrl,
+          uniqueKey: `google-${index}-v${variantIdx + 1}`,
+          userData: { query: nextVariant, index, siren, variantIdx: variantIdx + 1, variants },
+        });
+        return;
+      }
+
       stats.errors++;
       consecutiveErrors++;
 
