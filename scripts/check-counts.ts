@@ -1,25 +1,27 @@
 import postgres from "postgres";
 import * as dotenv from "dotenv";
 import { resolve } from "path";
+
 dotenv.config({ path: resolve(__dirname, "../.env.local") });
 
 const sql = postgres(process.env.DATABASE_URL || "postgresql://serres:SerresV2_2024!@65.21.146.193:5433/serresv2", { max: 3 });
 
 async function main() {
-  const insee = await sql`SELECT COUNT(*) as c FROM data_insee WHERE batch_id = 1`;
-  const inseeWithData = await sql`SELECT COUNT(*) as c FROM data_insee WHERE batch_id = 1 AND periodes_historique IS NOT NULL`;
-  console.log("data_insee total:", insee[0].c);
-  console.log("data_insee avec periodes_historique:", inseeWithData[0].c);
+  const rows = await sql`SELECT api_name, nb_total, nb_enrichis, statut FROM enrichissement_batch_api WHERE batch_id = 1 ORDER BY api_name`;
+  for (const r of rows) {
+    console.log(`${r.api_name}: ${r.nb_enrichis}/${r.nb_total} (${r.statut})`);
+  }
 
-  const apiGouv = await sql`SELECT COUNT(*) as c FROM data_api_gouv WHERE batch_id = 1`;
-  console.log("data_api_gouv total:", apiGouv[0].c);
+  const countSerres = await sql`SELECT COUNT(DISTINCT siren) as c FROM serres WHERE siren IS NOT NULL AND siren != ''`;
+  const countMatches = await sql`SELECT COUNT(DISTINCT siren) as c FROM serre_matches WHERE siren IS NOT NULL AND siren != ''`;
+  const countUnion = await sql`SELECT COUNT(*) as c FROM (SELECT DISTINCT siren FROM serres WHERE siren IS NOT NULL AND siren != '' UNION SELECT DISTINCT siren FROM serre_matches WHERE siren IS NOT NULL AND siren != '') t`;
 
-  const bodacc = await sql`SELECT COUNT(*) as c FROM data_bodacc WHERE batch_id = 1`;
-  console.log("data_bodacc total:", bodacc[0].c);
-
-  const google = await sql`SELECT COUNT(*) as c FROM data_google_places WHERE batch_id = 1`;
-  console.log("data_google_places total:", google[0].c);
+  console.log("\nSources SIREN:");
+  console.log("  serres distinctes:", countSerres[0].c);
+  console.log("  serre_matches distinctes:", countMatches[0].c);
+  console.log("  UNION (total prospects):", countUnion[0].c);
 
   await sql.end();
 }
+
 main();

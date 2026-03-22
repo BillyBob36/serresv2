@@ -8,8 +8,23 @@
 import postgres from "postgres";
 import * as dotenv from "dotenv";
 import { resolve } from "path";
+import { appendFileSync, writeFileSync } from "fs";
 
 dotenv.config({ path: resolve(__dirname, "../.env.local") });
+
+// Log to file so we don't lose output when process is detached
+const LOG_FILE = resolve(__dirname, "../data/batch-enrich.log");
+const originalLog = console.log;
+const originalWarn = console.warn;
+const originalError = console.error;
+function logToFile(level: string, ...args: any[]) {
+  const ts = new Date().toISOString().slice(11, 19);
+  const msg = `[${ts}][${level}] ${args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ")}\n`;
+  try { appendFileSync(LOG_FILE, msg); } catch {}
+}
+console.log = (...args: any[]) => { originalLog(...args); logToFile("INFO", ...args); };
+console.warn = (...args: any[]) => { originalWarn(...args); logToFile("WARN", ...args); };
+console.error = (...args: any[]) => { originalError(...args); logToFile("ERR", ...args); };
 
 const sql = postgres(
   process.env.DATABASE_URL ||
@@ -18,7 +33,7 @@ const sql = postgres(
 );
 
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || "";
-const INSEE_SIRENE_API_KEY = process.env.INSEE_SIRENE_API_KEY || "";
+const INSEE_SIRENE_API_KEY = process.env.INSEE_SIRENE_API_KEY || "e63e75bf-ad53-4920-9e35-66ec8c999abd";
 const INSEE_SIRENE_BASE = "https://api.insee.fr/api-sirene/3.11";
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN || "";
 const APIFY_PJ_ACTOR_ID = process.env.APIFY_PJ_ACTOR_ID || "McauDKXmReVaVEwk9";
@@ -99,6 +114,7 @@ async function enrichApiGouv(batchId: number, sirens: string[]) {
 
   let enrichis = skipped;
   let erreurs = 0;
+  let consecutive429 = 0;
 
   for (let i = 0; i < todo.length; i++) {
     const siren = todo[i];
@@ -109,11 +125,19 @@ async function enrichApiGouv(batchId: number, sirens: string[]) {
       );
 
       if (resp.status === 429) {
-        console.warn(`[API_GOUV] 429 rate limit, pause 5s...`);
-        await sleep(5000);
+        consecutive429++;
+        // Exponential backoff: 10s, 30s, 60s, 120s max
+        const waitSec = Math.min(10 * Math.pow(2, consecutive429 - 1), 120);
+        console.warn(`[API_GOUV] 429 rate limit (${consecutive429}x consecutive), pause ${waitSec}s...`);
+        await sleep(waitSec * 1000);
+        if (consecutive429 > 20) {
+          console.error(`[API_GOUV] 20 rate limits consecutifs, arret temporaire. Relancez plus tard.`);
+          break;
+        }
         i--; // retry
         continue;
       }
+      consecutive429 = 0;
 
       if (!resp.ok) {
         erreurs++;
@@ -194,8 +218,8 @@ async function enrichApiGouv(batchId: number, sirens: string[]) {
         await updateBatchApiStatus(batchId, "api_gouv", { nb_enrichis: enrichis, nb_erreurs: erreurs });
       }
 
-      // Rate limiting: ~5 req/s max
-      if ((i + 1) % 5 === 0) await sleep(200);
+      // Rate limiting: ~2 req/s to avoid 429 storms
+      await sleep(500);
 
     } catch (err) {
       erreurs++;
@@ -251,13 +275,19 @@ async function enrichInsee(batchId: number, sirens: string[]) {
       }
 
       if (!resp.ok) {
-        if (i < 3 || (i + 1) % 100 === 0) console.warn(`[INSEE] siren=${siren} HTTP ${resp.status}`);
+        console.warn(`[INSEE] siren=${siren} HTTP ${resp.status} (erreur consecutive #${consecutiveErrors + 1})`);
         erreurs++;
         consecutiveErrors++;
-        // Sleep even on error to avoid hammering
+        // Si erreur serveur (5xx), pause longue puis retry
+        if (resp.status >= 500) {
+          console.warn(`[INSEE] Erreur serveur ${resp.status}, pause 30s avant retry...`);
+          await sleep(30000);
+          i--; // retry ce SIREN
+          continue;
+        }
         await sleep(2000);
-        if (consecutiveErrors > 50) {
-          console.error("[INSEE] 50 erreurs consecutives, arret");
+        if (consecutiveErrors > 200) {
+          console.error("[INSEE] 200 erreurs consecutives, arret");
           break;
         }
         continue;
@@ -296,13 +326,20 @@ async function enrichInsee(batchId: number, sirens: string[]) {
       // INSEE rate limit: ~30 req/min → 2.5s par requete (24 req/min, safe margin)
       await sleep(2500);
 
-    } catch (err) {
+    } catch (err: any) {
       erreurs++;
       consecutiveErrors++;
-      console.error(`[INSEE] Erreur siren=${siren}:`, err);
-      await sleep(2000);
-      if (consecutiveErrors > 50) {
-        console.error("[INSEE] 50 erreurs consecutives (catch), arret");
+      const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
+      console.error(`[INSEE] Erreur siren=${siren} (consecutive #${consecutiveErrors}): ${isTimeout ? "TIMEOUT" : err?.message || err}`);
+      if (isTimeout) {
+        console.warn("[INSEE] Timeout, pause 15s avant retry...");
+        await sleep(15000);
+        i--; // retry
+      } else {
+        await sleep(5000);
+      }
+      if (consecutiveErrors > 200) {
+        console.error("[INSEE] 200 erreurs consecutives (catch), arret");
         break;
       }
     }

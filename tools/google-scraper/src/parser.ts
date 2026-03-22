@@ -24,19 +24,24 @@ export interface GoogleResult {
  * Instead of fragile CSS selectors, we read Google's internal data structure.
  */
 export async function parseSearchResults(page: Page, query: string): Promise<GoogleResult | null> {
-  // Handle consent screen first
+  // Handle consent screen first — must wait for maps to fully load after
   await handleConsent(page);
+
+  // If we just passed consent, wait for Google Maps URL
+  if (!page.url().includes('google.com/maps')) {
+    try {
+      await page.waitForURL('**/maps/**', { timeout: 10000 });
+      await page.waitForTimeout(2000);
+    } catch {
+      return null;
+    }
+  }
 
   // Wait for results to load
   try {
     await page.waitForSelector('div[role="feed"], h1.DUwDvf, a.hfpxzc', { timeout: 15000 });
   } catch {
-    await handleConsent(page);
-    try {
-      await page.waitForSelector('div[role="feed"], h1.DUwDvf, a.hfpxzc', { timeout: 10000 });
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   await page.waitForTimeout(2000);
@@ -56,79 +61,63 @@ export async function parseSearchResults(page: Page, query: string): Promise<Goo
 }
 
 async function handleConsent(page: Page): Promise<void> {
-  // Strategy 1: form-based consent (most reliable, used by gosom)
+  // Check if we're on consent page
+  const url = page.url();
+  if (!url.includes('consent.google') && !url.includes('consent')) return;
+
+  // Strategy 1: getByRole (most reliable for Google consent)
   try {
-    const form = page.locator('form[action*="consent.google"], form[action*="consent"]').first();
-    if (await form.isVisible({ timeout: 2000 }).catch(() => false)) {
-      const submitBtn = form.locator('button').first();
-      if (await submitBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-        await submitBtn.click();
-        await page.waitForTimeout(3000);
-        return;
-      }
-    }
+    await page.getByRole('button', { name: /tout accepter|accept all/i }).click({ timeout: 5000 });
+    await page.waitForTimeout(3000);
+    return;
   } catch { /* ignore */ }
 
-  // Strategy 2: button text matching
+  // Strategy 2: form submit button
   try {
-    const accepted = await page.evaluate(`
-      (() => {
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-          const text = (btn.textContent || '').toLowerCase();
-          if (text.includes('tout accepter') || text.includes('accept all') || text.includes('accepter')) {
-            btn.click();
-            return true;
-          }
-        }
-        return false;
-      })()
-    `);
-    if (accepted) await page.waitForTimeout(3000);
+    const btn = page.locator('form[action*="consent"] button').first();
+    await btn.click({ timeout: 3000 });
+    await page.waitForTimeout(3000);
+    return;
   } catch { /* ignore */ }
 }
 
 async function clickFirstOrganic(page: Page): Promise<boolean> {
-  // Use string evaluate to find and click the first non-sponsored result
-  const clicked = await page.evaluate(`
+  // Find the index of the first non-sponsored result
+  const idx = await page.evaluate(`
     (() => {
-      const links = document.querySelectorAll('a.hfpxzc');
-      for (const link of links) {
-        const rect = link.getBoundingClientRect();
+      var links = document.querySelectorAll('a.hfpxzc');
+      for (var i = 0; i < links.length; i++) {
+        var link = links[i];
+        var rect = link.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
 
-        // Check for "Sponsorisé" / "Sponsored" label in parent
-        let sponsored = false;
-        let parent = link.parentElement;
-        for (let j = 0; j < 5 && parent; j++) {
-          const text = parent.textContent || '';
+        var sponsored = false;
+        var parent = link.parentElement;
+        for (var j = 0; j < 5 && parent; j++) {
+          var text = parent.textContent || '';
           if ((text.includes('Sponsorisé') || text.includes('Sponsored')) && text.length < 500) {
             sponsored = true;
             break;
           }
           parent = parent.parentElement;
         }
-        if (!sponsored) {
-          link.click();
-          return true;
-        }
+        if (!sponsored) return i;
       }
-      // Fallback: click first visible link
-      for (const link of links) {
-        const rect = link.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          link.click();
-          return true;
-        }
+      // Fallback: first visible
+      for (var k = 0; k < links.length; k++) {
+        var r = links[k].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return k;
       }
-      return false;
+      return -1;
     })()
-  `) as boolean;
+  `) as number;
 
-  if (clicked) {
-    await page.waitForSelector('h1.DUwDvf', { timeout: 8000 }).catch(() => {});
-  }
-  return clicked;
+  if (idx < 0) return false;
+
+  // Use Playwright's native click (reliable, triggers SPA navigation)
+  await page.locator('a.hfpxzc').nth(idx).click();
+  await page.waitForSelector('h1.DUwDvf', { timeout: 8000 }).catch(() => {});
+  return true;
 }
 
 /**

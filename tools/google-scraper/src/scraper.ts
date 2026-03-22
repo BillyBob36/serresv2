@@ -95,11 +95,16 @@ export async function scrapeGoogleMaps(
           height: 800 + Math.floor(Math.random() * 200),
         });
 
-        // Random User-Agent
-        const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+        // Anti-detection
         await page.context().addInitScript(() => {
           Object.defineProperty(navigator, 'webdriver', { get: () => false });
         });
+
+        // Pre-set Google consent cookies to bypass consent screen
+        await page.context().addCookies([
+          { name: 'SOCS', value: 'CAISHAgBEhJnd3NfMjAyNTAzMjItMF9SQzIaAmZyIAEaBgiA_vG8Bg', domain: '.google.com', path: '/' },
+          { name: 'CONSENT', value: 'PENDING+987', domain: '.google.com', path: '/' },
+        ]);
 
         // Block heavy resources (keep stylesheets — Google Maps needs them for layout)
         await page.route('**/*', (route) => {
