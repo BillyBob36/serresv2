@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import sql from "@/lib/db";
-// Force dynamic — never cache API routes
-export const dynamic = "force-dynamic";
+import { fetchAndMergeEnrichment } from "@/lib/merge-enrichment";
 
+// Force dynamic - never cache API routes
+export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -15,14 +15,8 @@ export async function POST(request: NextRequest) {
   // Limit to 100 sirens per batch
   const batch = sirens.slice(0, 100);
 
-  const rows = await sql`
-    SELECT * FROM enrichissement_entreprise WHERE siren = ANY(${batch})
-  `;
+  // Use cascade merge from all data_* tables (same logic as batch/[id]/data)
+  const data = await fetchAndMergeEnrichment(batch);
 
-  const result: Record<string, any> = {};
-  for (const row of rows) {
-    result[row.siren] = row;
-  }
-
-  return NextResponse.json({ data: result });
+  return NextResponse.json({ data });
 }
