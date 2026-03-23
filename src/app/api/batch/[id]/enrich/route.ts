@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import sql from "@/lib/db";
-import { spawn } from "child_process";
-import { mkdirSync, writeFileSync, appendFileSync } from "fs";
-import { join } from "path";
+import sql from "@/lib/db";import { spawn } from "child_process";import { mkdirSync, writeFileSync, appendFileSync } from "fs";import { join } from "path";const LOG_DIR = join(process.cwd(), ".update-logs");
 
-const LOG_DIR = join(process.cwd(), ".update-logs");
+// Force dynamic — never cache API routes
+export const dynamic = "force-dynamic";
 
 // Track running batch enrichment processes
 const runningProcesses: Map<string, { pid: number; startedAt: string }> = new Map();

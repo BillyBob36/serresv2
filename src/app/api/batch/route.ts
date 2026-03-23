@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
+// Force dynamic — never cache API routes
+export const dynamic = "force-dynamic";
+
 
 const API_NAMES = ["api_gouv", "insee", "google_places", "bodacc", "pages_jaunes"];
 

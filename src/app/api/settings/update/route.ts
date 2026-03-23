@@ -3,6 +3,9 @@ import { spawn } from "child_process";
 import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
+// Force dynamic — never cache API routes
+export const dynamic = "force-dynamic";
+
 const SCRIPTS: Record<string, string> = {
   rpg: "scripts/import-rpg.ts",
   entreprises: "scripts/import-entreprises.ts",

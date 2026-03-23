@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import sql from "@/lib/db";
+// Force dynamic — never cache API routes
+export const dynamic = "force-dynamic";
+
 
 // Dernière année RPG disponible en open data (à mettre à jour manuellement)
 const RPG_LATEST_YEAR = 2024;

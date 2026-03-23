@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
+// Force dynamic — never cache API routes
+export const dynamic = "force-dynamic";
+
 
 // GET: get batch detail with API statuses
 export async function GET(

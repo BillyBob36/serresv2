@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
+// Force dynamic — never cache API routes
+export const dynamic = "force-dynamic";
+
 
 export async function POST(request: NextRequest) {
   const body = await request.json();

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import sql from "@/lib/db";
 
+// Force dynamic — never cache this route
+export const dynamic = "force-dynamic";
+
 // GET: get merged enrichment data for a batch, keyed by siren
 // Used by the tableau in "BDD stockée" mode
 export async function GET(

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, existsSync } from "fs";import { join } from "path";const LOG_DIR = join(process.cwd(), ".update-logs");
 
-const LOG_DIR = join(process.cwd(), ".update-logs");
+// Force dynamic � never cache API routes
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   // Import dynamique pour accéder au state partagé
