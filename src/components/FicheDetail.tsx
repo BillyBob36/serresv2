@@ -389,7 +389,7 @@ export default function FicheDetail({
 
               <div className="h-3" />
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Localisation siege</p>
-              <Row label="Adresse" value={e.adresse_siege || e.google_formatted_address} />
+              <Row label="Adresse" value={e.adresse_siege} />
               <Row label="Code postal" value={e.code_postal_siege} />
               <Row label="Commune" value={e.libelle_commune_siege} />
               {e.latitude_siege && e.longitude_siege && (
@@ -415,10 +415,38 @@ export default function FicheDetail({
               )}
 
               <div className="h-3" />
+              {/* Tous les telephones PJ si multiples */}
+              {e.pj_telephone && Array.isArray(e.pj_telephone) && e.pj_telephone.length > 1 && (
+                <div className="mt-1">
+                  <p className="text-[10px] text-gray-400">Autres tel PJ :</p>
+                  {e.pj_telephone.slice(1).map((t: string, i: number) => (
+                    <a key={i} href={`tel:${t}`} className="text-[11px] text-blue-600 hover:underline block">{t}</a>
+                  ))}
+                </div>
+              )}
+
+              <div className="h-3" />
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Sources enrichissement</p>
+              <Row label="Sources" value={e.source} />
+              {e.pj_match_confidence && <Row label="Confiance PJ" value={e.pj_match_confidence} />}
+              {e.pj_source_personne && <Row label="Trouve via" value={e.pj_source_personne} />}
+
+              <div className="h-3" />
               <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Avis & presence en ligne</p>
               <Row label="Statut" value={e.google_business_status ? (googleStatusLabel[e.google_business_status] || e.google_business_status) : null} />
-              <Row label="Note" value={e.note_google ? `${e.note_google}/5 (${e.avis_count || 0} avis)` : null} />
+              <Row label="Note" value={e.note_google ? `${e.note_google}/5 (${e.avis_count || 0} avis)${e.note_source === "pj" ? " - PJ" : " - Google"}` : null} />
               <Row label="Type" value={e.google_primary_type} />
+              {e.pj_url && (
+                <Row
+                  label="Pages Jaunes"
+                  value={<a href={e.pj_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Voir la fiche PJ</a>}
+                />
+              )}
+              {e.pj_description && <Row label="Description PJ" value={e.pj_description} />}
+              {e.pj_activite && <Row label="Activite PJ" value={e.pj_activite} />}
+              {e.pj_multi_activite && Array.isArray(e.pj_multi_activite) && e.pj_multi_activite.length > 0 && (
+                <Row label="Multi-activites" value={e.pj_multi_activite.join(", ")} />
+              )}
               {e.horaires && (
                 <div className="mt-2">
                   <p className="text-xs text-gray-500 mb-1">Horaires</p>
