@@ -27,10 +27,14 @@ const FORMES = [
 function stripFormeJuridique(name: string): string {
   let cleaned = name;
   for (const forme of FORMES) {
+    // Strip forme at start: "EARL DES PEPINIERES" -> "DES PEPINIERES"
     cleaned = cleaned.replace(new RegExp(`^${forme}\\s+`, "i"), "");
+    // Strip forme at end
     cleaned = cleaned.replace(new RegExp(`\\s+${forme}$`, "i"), "");
   }
-  return cleaned.trim();
+  // Strip common linking words left at the start: DES, DE, DU, DE LA, DE L', D', L'
+  cleaned = cleaned.replace(/^(des|de la|de l'|du|de|d'|l')\s+/i, "").trim();
+  return cleaned;
 }
 
 function buildNameVariants(p: any): string[] {

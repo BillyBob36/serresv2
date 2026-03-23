@@ -27,7 +27,9 @@ function stripFormeJuridique(name: string): string {
     cleaned = cleaned.replace(new RegExp(`^${forme}\\s+`, "i"), "");
     cleaned = cleaned.replace(new RegExp(`\\s+${forme}$`, "i"), "");
   }
-  return cleaned.trim();
+  // Strip common linking words left at the start: DES, DE, DU, DE LA, DE L', D', L'
+  cleaned = cleaned.replace(/^(des|de la|de l'|du|de|d'|l')\s+/i, "").trim();
+  return cleaned;
 }
 
 function buildNameVariants(p: any): string[] {
