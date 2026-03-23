@@ -177,33 +177,26 @@ export default function Home() {
 
   const [quotaMessage, setQuotaMessage] = useState<string | null>(null);
 
-  const enrichir = async (siren: string, nom: string, lat: number, lon: number, autoOpen?: { serre: Serre; match: SerreMatch }, force?: boolean) => {
-    if (!force && enrichCache[siren]) {
+  // Charge les donnees enrichies depuis la BDD (cascade merge) pour un siren
+  const loadEnrichData = async (siren: string, autoOpen?: { serre: Serre; match: SerreMatch }) => {
+    if (enrichCache[siren]) {
       if (autoOpen) setFicheOpen(autoOpen);
       return;
     }
     setEnrichLoading(siren);
     try {
-      const resp = await fetch(`${API}/api/enrichir`, {
+      const resp = await fetch(`${API}/api/enrichir/batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ siren, nom_entreprise: nom, lat, lon, force: !!force }),
+        body: JSON.stringify({ sirens: [siren] }),
       });
       const json = await resp.json();
-      if (!resp.ok) {
-        if (json.quota_exceeded) {
-          setQuotaMessage(json.error);
-        } else {
-          alert(json.error || "Erreur lors de l'enrichissement");
-        }
-        return;
+      if (json.data && json.data[siren]) {
+        setEnrichCache((prev) => ({ ...prev, [siren]: json.data[siren] }));
       }
-      if (json.data) {
-        setEnrichCache((prev) => ({ ...prev, [siren]: json.data }));
-        if (autoOpen) setFicheOpen(autoOpen);
-      }
+      if (autoOpen) setFicheOpen(autoOpen);
     } catch (err) {
-      console.error("Erreur enrichissement:", err);
+      console.error("Erreur chargement donnees:", err);
     } finally {
       setEnrichLoading(null);
     }
@@ -776,7 +769,7 @@ export default function Home() {
                                   </>
                                 ) : viewMode === "realtime" ? (
                                   <button
-                                    onClick={() => enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon), { serre: s, match: m })}
+                                    onClick={() => loadEnrichData(m.siren, { serre: s, match: m })}
                                     disabled={enrichLoading === m.siren}
                                     className="px-2 py-0.5 rounded text-[10px] font-medium bg-orange-100 text-orange-700 hover:bg-orange-200"
                                   >
@@ -822,9 +815,7 @@ export default function Home() {
                               <button
                                 onClick={() => {
                                   setFicheOpen({ serre: s, match: m });
-                                  if (!enrichCache[m.siren]) {
-                                    enrichir(m.siren, m.nom_entreprise || "", Number(s.centroid_lat), Number(s.centroid_lon));
-                                  }
+                                  loadEnrichData(m.siren);
                                   fetchNotes(m.siren);
                                 }}
                                 className="px-2 py-1 rounded text-[10px] font-medium bg-gray-100 hover:bg-blue-100 text-gray-600 hover:text-blue-700 transition"
@@ -894,9 +885,7 @@ export default function Home() {
           onOpenEntreprise={(serre, match) => {
             setFicheSerreOpen(null);
             setFicheOpen({ serre, match });
-            if (match.siren && !enrichCache[match.siren]) {
-              enrichir(match.siren, match.nom_entreprise || "", Number(serre.centroid_lat), Number(serre.centroid_lon));
-            }
+            if (match.siren) loadEnrichData(match.siren);
             fetchNotes(match.siren);
           }}
           excludedMatches={excludedMatches}
@@ -912,7 +901,9 @@ export default function Home() {
           onClose={() => setFicheOpen(null)}
           onEnrichir={() => {
             if (ficheOpen.match?.siren) {
-              enrichir(ficheOpen.match.siren, ficheOpen.match.nom_entreprise || "", Number(ficheOpen.serre.centroid_lat), Number(ficheOpen.serre.centroid_lon), undefined, true);
+              // Force reload from cascade
+              setEnrichCache((prev) => { const c = { ...prev }; delete c[ficheOpen.match.siren]; return c; });
+              loadEnrichData(ficheOpen.match.siren);
             }
           }}
           enrichLoading={enrichLoading === ficheOpen.match?.siren}
