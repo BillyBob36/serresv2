@@ -61,63 +61,88 @@ export interface PjDetailResult {
 
 /**
  * Parse search results page using string-based evaluate (avoid tsx __name issue).
+ * Updated March 2026: PJ uses li.bi cards, data-pjlb is JSON with base64 URL (ucod=b64u8).
  */
 export async function parseSearchResults(page: Page): Promise<PjSearchResult[]> {
   const results: PjSearchResult[] = await page.evaluate(`
     (() => {
       const results = [];
-      const cards = document.querySelectorAll('li[id^="bi-bloc-"], #listResults .bi-list > li');
+      // Updated selectors: PJ uses li.bi (bi-generic or bi-proconnu), id starts with bi- or epj-
+      const cards = document.querySelectorAll('li.bi, li[id^="bi-bloc-"], li[id^="bi-"], li[id^="epj-"]');
+      const seen = new Set();
 
       for (const card of cards) {
         // Skip ads
-        if (card.querySelector('.ad-pill')) continue;
+        if (card.querySelector('.ad-pill, .pub-container')) continue;
+        // Deduplicate by card id
+        if (card.id && seen.has(card.id)) continue;
+        if (card.id) seen.add(card.id);
 
-        // Name
+        // Name — a.bi-denomination contains an h3
         const nameEl = card.querySelector('a.bi-denomination, a.denomination-links');
         const name = nameEl?.textContent?.trim();
         if (!name) continue;
 
-        // Detail URL — prefer data-pjlb (base64 JSON), fallback to href
+        // Detail URL — data-pjlb is JSON (NOT base64-wrapped JSON)
+        // The url inside may be base64-encoded (ucod=b64u8) or a direct path
         let detailUrl = null;
         if (nameEl) {
           const pjlb = nameEl.getAttribute('data-pjlb');
           if (pjlb) {
             try {
-              const decoded = JSON.parse(atob(pjlb));
-              if (decoded.url) detailUrl = decoded.url;
-            } catch {}
+              // data-pjlb is already JSON like {"url":"L3Byb3Mv...","ucod":"b64u8"}
+              const parsed = JSON.parse(pjlb);
+              if (parsed.url) {
+                if (parsed.ucod === 'b64u8') {
+                  // URL is base64-encoded
+                  detailUrl = atob(parsed.url);
+                } else {
+                  detailUrl = parsed.url;
+                }
+              }
+            } catch {
+              // Fallback: maybe data-pjlb itself is base64 (old format)
+              try {
+                const decoded = JSON.parse(atob(pjlb));
+                if (decoded.url) detailUrl = decoded.url;
+              } catch {}
+            }
           }
+          // Fallback to href if not # or empty
           if (!detailUrl) {
-            detailUrl = nameEl.getAttribute('href') || null;
+            const href = nameEl.getAttribute('href') || '';
+            if (href && href !== '#' && href !== '') detailUrl = href;
           }
           if (detailUrl && !detailUrl.startsWith('http')) {
             detailUrl = 'https://www.pagesjaunes.fr' + detailUrl;
           }
         }
 
-        // Address
-        const addrEl = card.querySelector('.bi-address a, a.adresse.pj-link, a.adresse');
-        const address = addrEl?.textContent?.trim() || null;
+        // Address — multiple possible selectors
+        const addrEl = card.querySelector('.bi-address a, a.adresse.pj-link, a.adresse, .bi-address, .bi-adresse');
+        let address = addrEl?.textContent?.trim() || null;
+        // Clean up "Voir le plan" suffix
+        if (address) address = address.replace(/\\s*Voir le plan\\s*/i, '').trim();
 
         // Phone — directly visible as strong.num on search results
-        const phoneEl = card.querySelector('strong.num, .number-contact strong.num');
+        const phoneEl = card.querySelector('strong.num, .number-contact strong.num, .bi-phone strong');
         let phone = phoneEl?.textContent?.trim()?.replace(/\\s+/g, '') || null;
         if (phone && phone.length < 10) phone = null;
 
         // Category
-        const catEl = card.querySelector('a.activites.pj-link, a.activites, .bi-activite');
+        const catEl = card.querySelector('.bi-activity-unit, a.activites.pj-link, a.activites, .bi-activite');
         const category = catEl?.textContent?.trim() || null;
 
         // Website
-        const siteEl = card.querySelector('a.track-visit-website, li.bi-site-internet a');
+        const siteEl = card.querySelector('a.track-visit-website, li.bi-site-internet a, a.pj-link[href*="website"]');
         const website = siteEl?.getAttribute('href') || null;
 
         // Rating
-        const ratingEl = card.querySelector('.bi-note h4, .score');
+        const ratingEl = card.querySelector('.bi-note h4, .score, .note-moyenne');
         const rating = ratingEl?.textContent?.trim() || null;
 
         // Review count
-        const reviewEl = card.querySelector('.bi-rating, .nb-reviews');
+        const reviewEl = card.querySelector('.bi-rating, .nb-reviews, .nb-avis');
         const reviewText = reviewEl?.textContent?.trim() || '';
         const reviewMatch = reviewText.match(/(\\d+)/);
 

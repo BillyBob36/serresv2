@@ -397,7 +397,8 @@ export async function runScraper(
 
         // If we have a good match with a valid detail URL, navigate there for full data
         const hasValidDetailUrl = bestResult?.detailUrl &&
-          bestResult.detailUrl.startsWith("https://www.pagesjaunes.fr/pros/");
+          bestResult.detailUrl.includes("/pros/") &&
+          !bestResult.detailUrl.endsWith("#");
         if (bestResult && hasValidDetailUrl && bestConfidence !== "low") {
           await queue.addRequest({
             url: bestResult.detailUrl!,

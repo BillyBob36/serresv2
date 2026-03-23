@@ -322,12 +322,21 @@ export default function FicheDetail({
                 // Find best phone: company first, then dirigeant cascade
                 let bestPhone = e.telephone || null;
                 let phoneOwner: string | null = null;
+                let phoneSource: string | null = null;
+
+                if (bestPhone) {
+                  // Company-level phone — determine source
+                  phoneSource = e.pj_source_personne
+                    ? `PJ via ${e.pj_source_personne}`
+                    : e.source?.includes("pj") ? "PJ (entreprise)" : e.source?.includes("google") ? "Google" : "Entreprise";
+                }
 
                 if (!bestPhone) {
                   for (const d of physiques) {
                     if (d.telephone) {
                       bestPhone = d.telephone;
                       phoneOwner = `${d.prenoms || d.prenom || ""} ${d.nom || ""}`.trim();
+                      phoneSource = `PJ via dirigeant`;
                       break;
                     }
                   }
@@ -336,12 +345,18 @@ export default function FicheDetail({
                 // Find best email: company first, then dirigeant cascade
                 let bestEmail = e.email || null;
                 let emailOwner: string | null = null;
+                let emailSource: string | null = null;
+
+                if (bestEmail) {
+                  emailSource = e.source?.includes("google") ? "Google" : e.source?.includes("pj") ? "PJ" : "Entreprise";
+                }
 
                 if (!bestEmail) {
                   for (const d of physiques) {
                     if (d.email) {
                       bestEmail = d.email;
                       emailOwner = `${d.prenoms || d.prenom || ""} ${d.nom || ""}`.trim();
+                      emailSource = "Dirigeant";
                       break;
                     }
                   }
@@ -353,10 +368,13 @@ export default function FicheDetail({
                       <Row
                         label="Telephone"
                         value={
-                          <span>
+                          <div>
                             <a href={`tel:${bestPhone}`} className="text-blue-600 hover:underline">{bestPhone}</a>
-                            {phoneOwner && <span className="text-gray-400 text-[10px] ml-1">({phoneOwner})</span>}
-                          </span>
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              {phoneOwner && <span className="font-medium text-gray-500">{phoneOwner}</span>}
+                              {phoneSource && <span className="ml-1">({phoneSource})</span>}
+                            </div>
+                          </div>
                         }
                       />
                     ) : (
@@ -374,9 +392,12 @@ export default function FicheDetail({
                       <Row
                         label="Email"
                         value={
-                          <span>
+                          <div>
                             <a href={`mailto:${bestEmail}`} className="text-blue-600 hover:underline">{bestEmail}</a>
-                            {emailOwner && <span className="text-gray-400 text-[10px] ml-1">({emailOwner})</span>}
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              {emailOwner && <span className="font-medium text-gray-500">{emailOwner}</span>}
+                              {emailSource && <span className="ml-1">({emailSource})</span>}
+                            </div>
                           </span>
                         }
                       />
