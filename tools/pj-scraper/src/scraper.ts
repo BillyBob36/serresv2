@@ -153,6 +153,17 @@ export async function runScraper(
     });
   }
 
+  // Bright Data residential proxy config (set via env or defaults)
+  const proxyHost = process.env.PROXY_HOST || "brd.superproxy.io";
+  const proxyPort = process.env.PROXY_PORT || "33335";
+  const proxyUser = process.env.PROXY_USER || "brd-customer-hl_712ffaf7-zone-residential_proxy1-country-fr";
+  const proxyPass = process.env.PROXY_PASS || "4ooef63xtd2i";
+  const useProxy = process.env.NO_PROXY !== "1";
+
+  if (useProxy) {
+    console.log(`[PJ] Using residential proxy: ${proxyHost}:${proxyPort} (user: ${proxyUser.substring(0, 30)}...)`);
+  }
+
   const crawler = new PlaywrightCrawler({
     requestQueue: queue,
     headless: true,
@@ -176,7 +187,15 @@ export async function runScraper(
           "--disable-dev-shm-usage",
           "--no-sandbox",
           "--disable-gpu",
+          "--ignore-certificate-errors",
         ],
+        ...(useProxy ? {
+          proxy: {
+            server: `http://${proxyHost}:${proxyPort}`,
+            username: proxyUser,
+            password: proxyPass,
+          },
+        } : {}),
       },
     },
 
