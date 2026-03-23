@@ -34,7 +34,8 @@ export default function Home() {
   const [notes, setNotes] = useState<Record<string, { id: number; note: string; created_at: string; username?: string }[]>>({});
 
   // View mode: realtime (enrichir on click) vs stored (from batch)
-  const [viewMode, setViewMode] = useState<"realtime" | "stored">("realtime");
+  const [viewMode, setViewMode] = useState<"realtime" | "stored">("stored");
+  const [realtimeDisabledMsg, setRealtimeDisabledMsg] = useState(false);
   const [batchList, setBatchList] = useState<{ id: number; nom: string; created_at: string }[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
 
@@ -558,36 +559,34 @@ export default function Home() {
         <div className="flex items-center gap-4 mb-3 bg-white rounded-xl border border-gray-200 p-3">
           <div className="flex gap-1 bg-gray-100 rounded-lg p-0.5">
             <button
-              onClick={() => setViewMode("realtime")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "realtime" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+              onClick={() => { setRealtimeDisabledMsg(true); setTimeout(() => setRealtimeDisabledMsg(false), 3000); }}
+              className="px-3 py-1.5 rounded-md text-xs font-medium transition text-gray-400 cursor-not-allowed"
             >
-              RealTime
+              Temps reel
             </button>
             <button
               onClick={() => { setViewMode("stored"); fetchBatchList(); }}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "stored" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+              className="px-3 py-1.5 rounded-md text-xs font-medium transition bg-white text-gray-900 shadow-sm"
             >
               BDD Stockee
             </button>
           </div>
-          {viewMode === "stored" && (
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-gray-500">Enrichissement :</label>
-              <select
-                value={selectedBatchId || ""}
-                onChange={(e) => setSelectedBatchId(Number(e.target.value) || null)}
-                className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs text-gray-900 bg-white"
-              >
-                {batchList.length === 0 && <option value="">Aucun disponible</option>}
-                {batchList.map((b) => (
-                  <option key={b.id} value={b.id}>{b.nom}</option>
-                ))}
-              </select>
-            </div>
+          {realtimeDisabledMsg && (
+            <span className="text-[10px] text-orange-600 bg-orange-50 px-2 py-1 rounded animate-pulse">Mode Temps reel temporairement desactive</span>
           )}
-          {viewMode === "stored" && (
-            <span className="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded">Donnees pre-enrichies — pas de bouton Enrichir</span>
-          )}
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-500">Enrichissement :</label>
+            <select
+              value={selectedBatchId || ""}
+              onChange={(e) => setSelectedBatchId(Number(e.target.value) || null)}
+              className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs text-gray-900 bg-white"
+            >
+              {batchList.length === 0 && <option value="">Aucun disponible</option>}
+              {batchList.map((b) => (
+                <option key={b.id} value={b.id}>{b.nom}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Compteur résultats */}
