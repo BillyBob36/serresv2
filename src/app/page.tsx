@@ -250,48 +250,50 @@ export default function Home() {
     fetchBatchList();
   }, [fetchStats, fetchBatchList]);
 
-  // Charger les prospections + enrichissements quand les données changent
+  // Charger les prospections + enrichissements quand les données ou le mode changent
   useEffect(() => {
     if (data.length > 0) {
       fetchProspections(data.map((s) => s.id));
       // Initialiser excludedMatches depuis les top_matches
       const excluded: Record<string, boolean> = {};
-      const sirensToFetch: string[] = [];
+      const allSirens: string[] = [];
       for (const s of data) {
         for (const m of s.top_matches || []) {
           if (m.excluded) {
             excluded[`${s.id}_${m.siren}`] = true;
           }
-          if (m.siren && !enrichCache[m.siren]) {
-            sirensToFetch.push(m.siren);
+          if (m.siren) {
+            allSirens.push(m.siren);
           }
         }
       }
       setExcludedMatches((prev) => ({ ...prev, ...excluded }));
-      const uniqueSirens = [...new Set(sirensToFetch)];
+      const uniqueSirens = [...new Set(allSirens)];
 
-      if (viewMode === "stored" && selectedBatchId && uniqueSirens.length > 0) {
-        // Fetch from batch data
-        fetchBatchData(selectedBatchId, uniqueSirens);
-      } else if (viewMode === "realtime" && uniqueSirens.length > 0) {
-        // Fetch from enrichissement_entreprise
-        fetch(`${API}/api/enrichir/batch`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sirens: uniqueSirens }),
-        })
-          .then((r) => r.json())
-          .then((json) => {
-            if (json.data && Object.keys(json.data).length > 0) {
-              setEnrichCache((prev) => ({ ...prev, ...json.data }));
-            }
+      if (uniqueSirens.length > 0) {
+        if (viewMode === "stored" && selectedBatchId) {
+          // Fetch from batch data tables (cascade merge)
+          fetchBatchData(selectedBatchId, uniqueSirens);
+        } else {
+          // Fetch from cascade merge (realtime mode)
+          fetch(`${API}/api/enrichir/batch`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sirens: uniqueSirens }),
           })
-          .catch((err) => console.error("Batch enrich fetch error:", err));
+            .then((r) => r.json())
+            .then((json) => {
+              if (json.data && Object.keys(json.data).length > 0) {
+                setEnrichCache(json.data);
+              }
+            })
+            .catch((err) => console.error("Batch enrich fetch error:", err));
+        }
       }
     }
   }, [data, fetchProspections, viewMode, selectedBatchId, fetchBatchData]);
 
-  // Reload enrichCache when switching mode or batch
+  // Reset enrichCache when switching mode or batch to force reload
   useEffect(() => {
     setEnrichCache({});
   }, [viewMode, selectedBatchId]);
