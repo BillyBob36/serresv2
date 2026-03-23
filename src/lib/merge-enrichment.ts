@@ -13,11 +13,14 @@ export async function fetchAndMergeEnrichment(
   sirens: string[],
   batchId?: number
 ): Promise<Record<string, any>> {
-  if (sirens.length === 0) return {};
+  const hasSirens = sirens.length > 0;
+
+  // If no sirens AND no batchId, nothing to fetch
+  if (!hasSirens && !batchId) return {};
 
   // If no batchId given, find the latest batch that has data for these sirens
   let effectiveBatchId = batchId;
-  if (!effectiveBatchId) {
+  if (!effectiveBatchId && hasSirens) {
     const latestBatch = await sql`
       SELECT DISTINCT batch_id FROM data_api_gouv
       WHERE siren = ANY(${sirens})
@@ -27,15 +30,25 @@ export async function fetchAndMergeEnrichment(
   }
 
   // Fetch from all data tables
+  // When sirens is empty but batchId is set, fetch ALL data for the batch
   let gouvRows, inseeRows, googleRows, bodaccRows, pjRows;
 
-  if (effectiveBatchId) {
+  if (effectiveBatchId && hasSirens) {
     [gouvRows, inseeRows, googleRows, bodaccRows, pjRows] = await Promise.all([
       sql`SELECT * FROM data_api_gouv WHERE batch_id = ${effectiveBatchId} AND siren = ANY(${sirens})`,
       sql`SELECT * FROM data_insee WHERE batch_id = ${effectiveBatchId} AND siren = ANY(${sirens})`,
       sql`SELECT * FROM data_google_places WHERE batch_id = ${effectiveBatchId} AND siren = ANY(${sirens})`,
       sql`SELECT * FROM data_bodacc WHERE batch_id = ${effectiveBatchId} AND siren = ANY(${sirens})`,
       sql`SELECT * FROM data_pages_jaunes WHERE batch_id = ${effectiveBatchId} AND siren = ANY(${sirens})`,
+    ]);
+  } else if (effectiveBatchId) {
+    // No sirens filter: fetch ALL for this batch
+    [gouvRows, inseeRows, googleRows, bodaccRows, pjRows] = await Promise.all([
+      sql`SELECT * FROM data_api_gouv WHERE batch_id = ${effectiveBatchId}`,
+      sql`SELECT * FROM data_insee WHERE batch_id = ${effectiveBatchId}`,
+      sql`SELECT * FROM data_google_places WHERE batch_id = ${effectiveBatchId}`,
+      sql`SELECT * FROM data_bodacc WHERE batch_id = ${effectiveBatchId}`,
+      sql`SELECT * FROM data_pages_jaunes WHERE batch_id = ${effectiveBatchId}`,
     ]);
   } else {
     // No batch found, try without batch filter (take any data available)
