@@ -54,10 +54,20 @@ export async function GET(request: NextRequest) {
     conditions.push(`s.siren IS NOT NULL`);
   }
   if (filters.search) {
+    const term = `%${filters.search}%`;
     conditions.push(
-      `(s.commune ILIKE $${paramIdx} OR s.nom_entreprise ILIKE $${paramIdx} OR s.dirigeant_nom ILIKE $${paramIdx})`
+      `(s.commune ILIKE $${paramIdx} OR s.nom_entreprise ILIKE $${paramIdx}
+        OR s.dirigeant_nom ILIKE $${paramIdx} OR s.dirigeant_prenom ILIKE $${paramIdx}
+        OR EXISTS (
+          SELECT 1 FROM serre_matches sm
+          WHERE sm.serre_id = s.id AND (
+            sm.nom_entreprise ILIKE $${paramIdx}
+            OR sm.dirigeant_nom ILIKE $${paramIdx}
+            OR TRIM(COALESCE(sm.dirigeant_prenom, '') || ' ' || COALESCE(sm.dirigeant_nom, '')) ILIKE $${paramIdx}
+          )
+        ))`
     );
-    values.push(`%${filters.search}%`);
+    values.push(term);
     paramIdx++;
   }
 

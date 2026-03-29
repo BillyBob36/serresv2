@@ -3,7 +3,6 @@ import sql from "@/lib/db";
 // Force dynamic — never cache API routes
 export const dynamic = "force-dynamic";
 
-
 // GET: charger les prospections pour une liste de serre_ids
 export async function GET(request: NextRequest) {
   const serreIds = request.nextUrl.searchParams.get("serre_ids");
@@ -17,46 +16,52 @@ export async function GET(request: NextRequest) {
   }
 
   const data = await sql`
-    SELECT serre_id, statut, match_valide FROM prospection
+    SELECT serre_id, siren, statut, match_valide FROM prospection
     WHERE serre_id = ANY(${ids})
   `;
 
   return NextResponse.json({ data });
 }
 
-// PATCH: mettre à jour statut ou match_valide
+// PATCH: mettre à jour statut ou match_valide (par serre + siren)
 export async function PATCH(request: NextRequest) {
   const body = await request.json();
-  const { serre_id, statut, match_valide } = body;
+  const { serre_id, siren, statut, match_valide } = body;
 
-  if (!serre_id) {
-    return NextResponse.json({ error: "serre_id requis" }, { status: 400 });
+  if (!serre_id || !siren) {
+    return NextResponse.json({ error: "serre_id et siren requis" }, { status: 400 });
   }
 
-  // Récupérer user_id depuis le cookie
   let userId: number | null = null;
   const session = request.cookies.get("serres_session")?.value;
   if (session) {
     try {
       const decoded = JSON.parse(Buffer.from(session, "base64").toString());
       userId = decoded.id;
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }
 
-  // Upsert
   if (statut) {
     await sql`
-      INSERT INTO prospection (serre_id, user_id, statut, updated_at)
-      VALUES (${serre_id}, ${userId}, ${statut}, NOW())
-      ON CONFLICT (serre_id) DO UPDATE SET statut = ${statut}, user_id = ${userId}, updated_at = NOW()
+      INSERT INTO prospection (serre_id, siren, user_id, statut, updated_at)
+      VALUES (${serre_id}, ${siren}, ${userId}, ${statut}, NOW())
+      ON CONFLICT (serre_id, siren) DO UPDATE SET
+        statut = ${statut},
+        user_id = ${userId},
+        updated_at = NOW()
     `;
   }
 
   if (match_valide) {
     await sql`
-      INSERT INTO prospection (serre_id, user_id, match_valide, updated_at)
-      VALUES (${serre_id}, ${userId}, ${match_valide}, NOW())
-      ON CONFLICT (serre_id) DO UPDATE SET match_valide = ${match_valide}, user_id = ${userId}, updated_at = NOW()
+      INSERT INTO prospection (serre_id, siren, user_id, match_valide, updated_at)
+      VALUES (${serre_id}, ${siren}, ${userId}, ${match_valide}, NOW())
+      ON CONFLICT (serre_id, siren) DO UPDATE SET
+        match_valide = ${match_valide},
+        user_id = ${userId},
+        updated_at = NOW()
     `;
   }
 

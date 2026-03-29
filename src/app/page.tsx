@@ -8,6 +8,22 @@ import FicheSerre from "@/components/FicheSerre";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "";
 
+function prospectionKey(serreId: number, siren: string) {
+  return `${serreId}_${siren}`;
+}
+
+const STATUT_ROW_COLORS: Record<string, string> = {
+  nouveau: "bg-gray-100 text-gray-600",
+  a_contacter: "bg-blue-100 text-blue-700",
+  appele: "bg-yellow-100 text-yellow-700",
+  interesse: "bg-green-100 text-green-700",
+  pas_interesse: "bg-red-100 text-red-700",
+  injoignable: "bg-orange-100 text-orange-700",
+  client: "bg-purple-100 text-purple-700",
+  mauvais_numero: "bg-rose-100 text-rose-800",
+  hors_cible: "bg-slate-200 text-slate-700",
+};
+
 export default function Home() {
   const [data, setData] = useState<Serre[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -29,8 +45,10 @@ export default function Home() {
   const [expandedSerres, setExpandedSerres] = useState<Set<number>>(new Set());
   const [statutFilter, setStatutFilter] = useState("");
 
-  // Prospection state (keyed by serre_id)
-  const [prospections, setProspections] = useState<Record<number, { statut: string; match_valide: string }>>({});
+  // Prospection state (keyed by serre_id + siren)
+  const [prospections, setProspections] = useState<Record<string, { statut: string; match_valide: string }>>({});
+  const [prospectCsvSource, setProspectCsvSource] = useState("tout");
+  const [prospectCsvLoading, setProspectCsvLoading] = useState(false);
   const [notes, setNotes] = useState<Record<string, { id: number; note: string; created_at: string; username?: string }[]>>({});
 
   // View mode: realtime (enrichir on click) vs stored (from batch)
@@ -107,9 +125,13 @@ export default function Home() {
     try {
       const resp = await fetch(`${API}/api/prospection?serre_ids=${serreIds.join(",")}`);
       const json = await resp.json();
-      const map: Record<number, { statut: string; match_valide: string }> = {};
+      const map: Record<string, { statut: string; match_valide: string }> = {};
       for (const p of json.data || []) {
-        map[p.serre_id] = { statut: p.statut, match_valide: p.match_valide };
+        if (!p.siren) continue;
+        map[prospectionKey(p.serre_id, p.siren)] = {
+          statut: p.statut,
+          match_valide: p.match_valide,
+        };
       }
       setProspections(map);
     } catch (err) {
@@ -117,16 +139,17 @@ export default function Home() {
     }
   }, []);
 
-  const updateProspection = async (serreId: number, field: string, value: string) => {
+  const updateProspection = async (serreId: number, siren: string, field: string, value: string) => {
+    const key = prospectionKey(serreId, siren);
     setProspections((prev) => ({
       ...prev,
-      [serreId]: { ...prev[serreId], [field]: value },
+      [key]: { ...prev[key], statut: prev[key]?.statut || "nouveau", match_valide: prev[key]?.match_valide || "incertain", [field]: value },
     }));
     try {
       await fetch(`${API}/api/prospection`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serre_id: serreId, [field]: value }),
+        body: JSON.stringify({ serre_id: serreId, siren, [field]: value }),
       });
     } catch (err) {
       console.error("Erreur update prospection:", err);
@@ -330,6 +353,30 @@ export default function Home() {
     window.open(`${API}/api/export?${params}`, "_blank");
   };
 
+  const downloadProspectsCentralizedCsv = async () => {
+    setProspectCsvLoading(true);
+    try {
+      const resp = await fetch(`${API}/api/export/prospects-csv?source=${encodeURIComponent(prospectCsvSource)}`, {
+        credentials: "include",
+      });
+      if (!resp.ok) throw new Error(String(resp.status));
+      const blob = await resp.blob();
+      const cd = resp.headers.get("Content-Disposition");
+      const m = cd?.match(/filename="?([^";]+)"?/);
+      const name = m?.[1] || `prospects_${prospectCsvSource}.csv`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Export prospects CSV:", e);
+    } finally {
+      setProspectCsvLoading(false);
+    }
+  };
+
   const SortIcon = ({ col }: { col: string }) => {
     if (sortBy !== col) return <span className="text-gray-300 ml-1">{"\u21C5"}</span>;
     return (
@@ -366,6 +413,31 @@ export default function Home() {
             >
               Export CSV
             </button>
+            <div className="flex items-center gap-2 border border-gray-200 rounded-lg px-2 py-1 bg-gray-50">
+              <label className="text-xs text-gray-500 whitespace-nowrap">Prospects BDD</label>
+              <select
+                value={prospectCsvSource}
+                onChange={(e) => setProspectCsvSource(e.target.value)}
+                className="text-xs border-0 bg-transparent text-gray-800 max-w-[140px]"
+                title="Source des donnees enrichies (tables par API)"
+              >
+                <option value="tout">Tout</option>
+                <option value="pages_jaunes">Pages Jaunes</option>
+                <option value="api_gouv">API Gouv</option>
+                <option value="google_places">Google Places</option>
+                <option value="insee">INSEE Sirene</option>
+                <option value="bodacc">BODACC</option>
+                <option value="enrichissement">Fusion runtime (enrichissement)</option>
+              </select>
+              <button
+                type="button"
+                onClick={downloadProspectsCentralizedCsv}
+                disabled={prospectCsvLoading}
+                className="px-3 py-1.5 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition text-xs font-medium disabled:opacity-50"
+              >
+                {prospectCsvLoading ? "..." : "Telecharger"}
+              </button>
+            </div>
             <a
               href="/parametres"
               className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition"
@@ -537,6 +609,8 @@ export default function Home() {
                 <option value="pas_interesse">Pas interesse</option>
                 <option value="injoignable">Injoignable</option>
                 <option value="client">Client</option>
+                <option value="mauvais_numero">Mauvais numero</option>
+                <option value="hors_cible">Hors cible</option>
               </select>
             </div>
             <button
@@ -713,7 +787,8 @@ export default function Home() {
                     const rightCells = (m: SerreMatch | null, isFirst: boolean, isExpandedRow: boolean) => {
                       const en = m?.siren ? enrichCache[m.siren] : null;
                       const isExcluded = m ? excludedMatches[`${s.id}_${m.siren}`] : false;
-                      const statutColors: Record<string, string> = { nouveau: "bg-gray-100 text-gray-600", a_contacter: "bg-blue-100 text-blue-700", appele: "bg-yellow-100 text-yellow-700", interesse: "bg-green-100 text-green-700", pas_interesse: "bg-red-100 text-red-700", injoignable: "bg-orange-100 text-orange-700", client: "bg-purple-100 text-purple-700" };
+                      const pk = m?.siren ? prospectionKey(s.id, m.siren) : "";
+                      const prospectionRow = pk ? prospections[pk] : undefined;
                       const rowClass = isExcluded ? "line-through opacity-40" : "";
                       const borderLClass = isExpandedRow ? "border-l-2 border-gray-200" : "border-l-2 border-blue-300";
                       return (
@@ -783,19 +858,25 @@ export default function Home() {
                           </td>
                           {/* Statut */}
                           <td className="px-2 py-2 bg-blue-50/10">
-                            <select
-                              value={prospections[s.id]?.statut || "nouveau"}
-                              onChange={(ev) => updateProspection(s.id, "statut", ev.target.value)}
-                              className={`text-[11px] rounded px-1.5 py-1 border-0 font-medium cursor-pointer ${statutColors[prospections[s.id]?.statut || "nouveau"] || "bg-gray-100 text-gray-600"}`}
-                            >
-                              <option value="nouveau">Nouveau</option>
-                              <option value="a_contacter">A contacter</option>
-                              <option value="appele">Appele</option>
-                              <option value="interesse">Interesse</option>
-                              <option value="pas_interesse">Pas interesse</option>
-                              <option value="injoignable">Injoignable</option>
-                              <option value="client">Client</option>
-                            </select>
+                            {m?.siren ? (
+                              <select
+                                value={prospectionRow?.statut || "nouveau"}
+                                onChange={(ev) => updateProspection(s.id, m.siren, "statut", ev.target.value)}
+                                className={`text-[11px] rounded px-1.5 py-1 border-0 font-medium cursor-pointer ${STATUT_ROW_COLORS[prospectionRow?.statut || "nouveau"] || "bg-gray-100 text-gray-600"}`}
+                              >
+                                <option value="nouveau">Nouveau</option>
+                                <option value="a_contacter">A contacter</option>
+                                <option value="appele">Appele</option>
+                                <option value="interesse">Interesse</option>
+                                <option value="pas_interesse">Pas interesse</option>
+                                <option value="injoignable">Injoignable</option>
+                                <option value="client">Client</option>
+                                <option value="mauvais_numero">Mauvais numero</option>
+                                <option value="hors_cible">Hors cible</option>
+                              </select>
+                            ) : (
+                              <span className="text-gray-300 text-xs">{"\u2014"}</span>
+                            )}
                           </td>
                           {/* Exclude toggle */}
                           <td className="px-1 py-2 text-center bg-blue-50/10">
@@ -907,8 +988,16 @@ export default function Home() {
             }
           }}
           enrichLoading={enrichLoading === ficheOpen.match?.siren}
-          prospection={prospections[ficheOpen.serre.id] || null}
-          onUpdateProspection={(field, value) => updateProspection(ficheOpen.serre.id, field, value)}
+          prospection={
+            ficheOpen.match?.siren
+              ? prospections[prospectionKey(ficheOpen.serre.id, ficheOpen.match.siren)] || null
+              : null
+          }
+          onUpdateProspection={(field, value) => {
+            if (ficheOpen.match?.siren) {
+              updateProspection(ficheOpen.serre.id, ficheOpen.match.siren, field, value);
+            }
+          }}
           notes={ficheOpen.match?.siren ? (notes[ficheOpen.match.siren] || []) : []}
           onAddNote={(text) => ficheOpen.match?.siren && addNote(ficheOpen.match.siren, text)}
         />

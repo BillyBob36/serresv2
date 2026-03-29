@@ -34,6 +34,8 @@ const STATUT_COLORS: Record<string, string> = {
   pas_interesse: "bg-red-100 text-red-700",
   injoignable: "bg-orange-100 text-orange-700",
   client: "bg-purple-100 text-purple-700",
+  mauvais_numero: "bg-rose-100 text-rose-800",
+  hors_cible: "bg-slate-200 text-slate-700",
 };
 
 function Row({ label, value, className }: { label: string; value: any; className?: string }) {
@@ -149,6 +151,8 @@ export default function FicheDetail({
               <option value="pas_interesse">Pas interesse</option>
               <option value="injoignable">Injoignable</option>
               <option value="client">Client</option>
+              <option value="mauvais_numero">Mauvais numero</option>
+              <option value="hors_cible">Hors cible</option>
             </select>
           </div>
         </div>
@@ -398,7 +402,7 @@ export default function FicheDetail({
                               {emailOwner && <span className="font-medium text-gray-500">{emailOwner}</span>}
                               {emailSource && <span className="ml-1">({emailSource})</span>}
                             </div>
-                          </span>
+                          </div>
                         }
                       />
                     ) : (
